@@ -1073,6 +1073,37 @@ void RestHandler::handle_openai_chat_completion(const json& request,
         json tools = request.value("tools", json::array());
         json options = request.value("options", json::object());
 
+        // --- tool_choice handling (OpenAI-compatible) ---
+        // "none":  do not expose tools; the model answers directly (hard guarantee).
+        // {"type":"function","function":{"name":"X"}}: expose ONLY tool X, so any tool call
+        //          the model makes is necessarily X (a structural constraint, not a prompt hack).
+        // "required"/"auto"/absent: default behavior; the model decides.
+        // NOTE: OpenAI's "required" (and a hard guarantee for forced-function) cannot be
+        // honored without constrained decoding to force the Harmony commentary channel.
+        // Prompt-level directives were tried and rejected: they confused the model into
+        // emitting malformed tool calls in the wrong channel. So "required" is treated as
+        // "auto" here rather than degrading output with an unreliable nudge.
+        json tool_choice = request.value("tool_choice", json("auto"));
+        if (tool_choice.is_string()) {
+            if (tool_choice.get<std::string>() == "none") {
+                tools = json::array();
+            }
+        }
+        else if (tool_choice.is_object()) {
+            const std::string forced_name = tool_choice.value("function", json::object()).value("name", std::string());
+            if (!forced_name.empty()) {
+                json filtered = json::array();
+                for (const auto& t : tools) {
+                    if (t.value("function", json::object()).value("name", std::string()) == forced_name) {
+                        filtered.push_back(t);
+                    }
+                }
+                if (!filtered.empty()) {
+                    tools = filtered;
+                }
+            }
+        }
+
         auto load_start_time = time_utils::now();
         if (!ensure_model_loaded(model)) {
             json error_response = {{"error", "Failed to load " + model + " model!"}};
