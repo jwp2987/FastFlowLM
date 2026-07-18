@@ -201,7 +201,7 @@ protected:
 	buffer<bf16> _chunked_insert(chat_meta_info_t& meta_info, std::vector<int>& tokens, std::function<bool()> is_cancelled = [] { return false; }, void* payload = nullptr, int first_len_run = 0);
 	std::string _shared_generate(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled = [] { return false; });
 
-	StreamResult _shared_think_tool_calling_pasrsed(const std::string content);
+	StreamResult _shared_think_tool_calling_pasrsed(const std::string& content);
 
 public:
 	//************ Shared by all models *************/
@@ -389,13 +389,13 @@ public:
 
 	virtual std::string apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools = nlohmann::ordered_json::object()) = 0;
 
-	virtual NonStreamResult parse_nstream_content(const std::string response_text) {
+	virtual NonStreamResult parse_nstream_content(const std::string& response_text) {
 		NonStreamResult result;
 		result.content = response_text;
 		return result;
 	}
 
-	virtual StreamResult parse_stream_content(const std::string content) {
+	virtual StreamResult parse_stream_content(const std::string& content) {
 		//header_print("AUTOMODEL PARSING", content);
 
 		StreamResult result;
@@ -405,7 +405,7 @@ public:
 		return result;
 	}
 
-	virtual StreamResult parse_stream_content_final(const std::string content) {
+	virtual StreamResult parse_stream_content_final(const std::string& content) {
 		if (!content.empty()) {
 			return parse_stream_content(content);
 		}

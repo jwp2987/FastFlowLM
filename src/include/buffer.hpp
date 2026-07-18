@@ -241,7 +241,10 @@ public:
     /// \param src the source
     /// \param size the size
     void copy_from(const uint8_t* src, size_t size) {
-        assert(size <= size_);
+        if (size > size_) {
+            throw std::runtime_error("copy_from would overrun destination: " +
+                std::to_string(size) + " > " + std::to_string(size_));
+        }
         std::memcpy(data_, src, size);
     }
 
@@ -249,7 +252,12 @@ public:
     /// \param new_size the new size
     void resize(size_t new_size) {
 #ifdef __XRT__
-        assert(!is_bo_owner_);
+        // Resizing would silently drop the device buffer, so this is a misuse
+        // rather than an invariant. Throw instead of asserting: asserts are
+        // compiled out by -DNDEBUG in Release, which is what ships.
+        if (is_bo_owner_) {
+            throw std::runtime_error("Cannot resize a buffer that owns an xrt::bo");
+        }
 #endif
         if (data_ != nullptr && !is_owner_) {
             throw std::runtime_error("Cannot resize a non-owner buffer");
@@ -270,9 +278,9 @@ public:
 
     /// \brief free, release the memory or the bo
     void free() {
-#ifdef __XRT__
-        assert(!is_bo_owner_);
-#endif
+        // Releasing an owned bo is this function's documented job -- the code
+        // below does exactly that -- so there is deliberately no is_bo_owner_
+        // assertion here.
         if (is_owner_){
             owned_data_.reset();
         }
@@ -327,8 +335,20 @@ public:
         size_t file_size = file.tellg();
         file.seekg(0, std::ios::beg);
         if (size == 0) size = file_size;
-        assert(size <= file_size);
-        assert(offset + size <= size_);
+        // These bounds come from file contents rather than internal invariants,
+        // so they are real checks: -DNDEBUG strips asserts from Release builds,
+        // which would leave an oversized file silently overrunning the buffer.
+        if (size > file_size) {
+            throw std::runtime_error("Requested " + std::to_string(size) +
+                " bytes but " + filename + " holds only " + std::to_string(file_size));
+        }
+        if (data_ == nullptr) {
+            throw std::runtime_error("from_file on an unallocated buffer: " + filename);
+        }
+        // Written as a subtraction so that offset + size cannot wrap.
+        if (offset > size_ || size > size_ - offset) {
+            throw std::runtime_error("from_file would overrun destination reading " + filename);
+        }
         file.read(reinterpret_cast<char*>(data_) + offset, size);
         file.close();
     }

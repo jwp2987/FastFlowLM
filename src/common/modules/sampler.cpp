@@ -215,28 +215,39 @@ void Sampler::sampler_penalty_apply_sparse() {
 }
 
 void Sampler::sampler_topk_apply(int k) {
-    if (k == 0) {
-        return;
+    // k <= 0 means "no top-k filtering". Returning early instead would leave
+    // top_k_logits holding the previous token's candidates, and the caller would
+    // then sample from stale data (or from an empty vector on the first token).
+    if (k <= 0 || k > in_features) {
+        k = in_features;
     }
 
-    logits_list_t pairs;
-    pairs.resize(in_features);
-    for (int i = 0; i < in_features; i++) {
-        pairs[i].logits = this->logits[i];
-        pairs[i].token_id = i;
-        pairs[i].prob = 0.0f;
-    }
+    // Ordering by descending logit doubles as the min-heap predicate: make_heap
+    // with a greater-than comparator puts the *weakest* candidate at the root.
+    auto by_logit_desc = [](const logits_t& a, const logits_t& b) {
+        return a.logits > b.logits;
+    };
 
-    std::partial_sort(
-        pairs.begin(),
-        pairs.begin() + k,
-        pairs.end(),
-        [](const logits_t& a, const logits_t& b) {
-            return a.logits > b.logits;
+    // Keep only k candidates rather than materializing a vocabulary-sized array
+    // of pairs per token; the bulk of the vocabulary is then rejected by a
+    // single comparison against the weakest survivor.
+    this->top_k_logits.clear();
+    this->top_k_logits.reserve(k);
+    for (int i = 0; i < k; i++) {
+        this->top_k_logits.push_back({this->logits[i], i, 0.0f});
+    }
+    std::make_heap(this->top_k_logits.begin(), this->top_k_logits.end(), by_logit_desc);
+
+    for (int i = k; i < in_features; i++) {
+        if (this->logits[i] > this->top_k_logits.front().logits) {
+            std::pop_heap(this->top_k_logits.begin(), this->top_k_logits.end(), by_logit_desc);
+            this->top_k_logits.back() = {this->logits[i], i, 0.0f};
+            std::push_heap(this->top_k_logits.begin(), this->top_k_logits.end(), by_logit_desc);
         }
-    );
+    }
 
-    this->top_k_logits.assign(pairs.begin(), pairs.begin() + k);
+    // Downstream top_p / min_p filtering requires descending order.
+    std::sort(this->top_k_logits.begin(), this->top_k_logits.end(), by_logit_desc);
 }
 
 void Sampler::sampler_topp_apply(float p) {

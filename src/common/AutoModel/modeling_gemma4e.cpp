@@ -942,7 +942,7 @@ std::string Gemma4e::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifor
 }
 
 // Non-stream
-NonStreamResult Gemma4e::parse_nstream_content(const std::string response_text) {
+NonStreamResult Gemma4e::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     std::string think_start_tag = "<|channel>thought";
@@ -1017,15 +1017,15 @@ NonStreamResult Gemma4e::parse_nstream_content(const std::string response_text) 
 
 
 // Stream
-StreamResult Gemma4e::parse_stream_content(const std::string content) {
+StreamResult Gemma4e::parse_stream_content(const std::string& content) {
     return parse_stream_content_impl(content, false);
 }
 
-StreamResult Gemma4e::parse_stream_content_final(const std::string content) {
+StreamResult Gemma4e::parse_stream_content_final(const std::string& content) {
     return parse_stream_content_impl(content, true);
 }
 
-StreamResult Gemma4e::parse_stream_content_impl(const std::string content, bool is_final) {
+StreamResult Gemma4e::parse_stream_content_impl(const std::string& content, bool is_final) {
     const std::string MARKER_THINK_START = "<|channel>thought";
     const std::string MARKER_THINK_END = "<channel|>";
     const std::string MARKER_TOOL_START = "<|tool_call>";

@@ -69,7 +69,8 @@ public:
     /// \param start the start index
     /// \param end the end index
     /// \return the sub buffer
-    buffer<T>& get_sub_buffer(uint32_t start, uint32_t end){
+    buffer<T> get_sub_buffer(uint32_t start, uint32_t end){
+        assert(buf != nullptr);
         assert((end + offset) * D <= buf->size());
         return buffer<T>(buf->data() + (start + offset) * D, (end - start) * D);
     }

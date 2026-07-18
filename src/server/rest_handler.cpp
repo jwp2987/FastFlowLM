@@ -23,7 +23,7 @@
 ///@brief Normalize messages by merging consecutive user messages (like Ollama does)
 ///@param messages the original messages
 ///@return normalized messages with consecutive user messages merged
-static json normalize_messages(json messages) {
+static json normalize_messages(const json& messages) {
     if (messages.empty()) return messages;
 
     json normalized = nlohmann::ordered_json::array();
@@ -124,22 +124,27 @@ static json normalize_messages(json messages) {
     return normalized;
 }
 
-static json normalize_template(json messages) {
+static json normalize_template(const json& messages) {
     json template_message = json::array();
 
-    for (auto& message : messages) {
+    for (const auto& message : messages) {
         json new_message = message;
         std::string merged_text;
         nlohmann::ordered_json::array_t merged_images;
         nlohmann::ordered_json::array_t merged_audio;
 
-        if (message["content"].is_string()) {
+        // A missing "content" is treated as empty, matching what the previous
+        // non-const operator[] produced by default-inserting null.
+        static const json null_content;
+        const json& content_ref = message.contains("content") ? message.at("content") : null_content;
+
+        if (content_ref.is_string()) {
             // Simple format: just text
-            merged_text = message["content"].get<std::string>();
+            merged_text = content_ref.get<std::string>();
         }
-        else if (message["content"].is_array()) {
+        else if (content_ref.is_array()) {
             // Structured format: extract text and image URLs
-            for (auto& contentItem : message["content"]) {
+            for (const auto& contentItem : content_ref) {
                 if (contentItem.contains("type") && contentItem["type"] == "text") {
                     merged_text += contentItem["text"].get<std::string>();
                 }
@@ -207,7 +212,7 @@ static json try_parse_json_value(const std::string& s) {
 ///@brief Convert OpenAI-style assistant tool_calls + following tool messages into the
 /// Gemma4 chat-template format, which expects a single assistant message containing
 /// both `tool_calls` and `tool_responses` (with `{name, response}` entries).
-static json convert_tool_responses_gemma4(json messages) {
+static json convert_tool_responses_gemma4(const json& messages) {
     json converted_messages = json::array();
 
     size_t i = 0;

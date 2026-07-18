@@ -335,7 +335,7 @@ std::string GPT_OSS::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifor
     return "<|start|>assistant" + result + "<|end|>";
 }
 
-NonStreamResult GPT_OSS::parse_nstream_content(const std::string response_text) {    
+NonStreamResult GPT_OSS::parse_nstream_content(const std::string& response_text) {    
     NonStreamResult result;
 
     const std::string think_start_tag = "<|start|>assistant<|channel|>analysis<|message|>";
@@ -543,7 +543,7 @@ void GPT_OSS::mask_logits(buffer<bf16>& logits, const std::vector<int>& allowed_
     }
 }
 
-StreamResult GPT_OSS::parse_stream_content(const std::string content) {
+StreamResult GPT_OSS::parse_stream_content(const std::string& content) {
     //header_print("GPTOSSHERE", content);
 
     const std::string MARKER_REASONING = "<|start|>assistant<|channel|>analysis<|message|>";

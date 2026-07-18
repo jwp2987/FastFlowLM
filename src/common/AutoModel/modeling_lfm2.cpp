@@ -94,7 +94,7 @@ std::string LFM2::generate_with_prompt(chat_meta_info_t& meta_info, lm_uniform_i
     return this->generate(meta_info, length_limit, os);
 }
 
-StreamResult LFM2::parse_stream_content(const std::string content) {
+StreamResult LFM2::parse_stream_content(const std::string& content) {
     const std::string TOOL_START = "<|tool_call_start|>";
     const std::string TOOL_END = "<|tool_call_end|>";
 
@@ -347,7 +347,7 @@ bool LFM2_5_TK::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, s
 
     // Remove the starting reasoning placeholder appended by the chat template: "<think>\n" -> token ids 151667 708.
     size_t n = tokens.size();
-    tokens.resize(n - 2);
+    tokens.resize(n > 2 ? n - 2 : 0);
 
     bool success = this->_shared_insert(meta_info, tokens, is_cancelled, nullptr);
 
@@ -462,7 +462,7 @@ std::string LFM2_5_TK::generate_with_prompt(chat_meta_info_t& meta_info, lm_unif
     return this->generate(meta_info, length_limit, os);
 }
 
-NonStreamResult LFM2_5_TK::parse_nstream_content(const std::string response_text) {
+NonStreamResult LFM2_5_TK::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     std::string content, reasoning_content;
@@ -484,7 +484,7 @@ NonStreamResult LFM2_5_TK::parse_nstream_content(const std::string response_text
     return result;
 }
 
-StreamResult LFM2_5_TK::parse_stream_content(const std::string content) {
+StreamResult LFM2_5_TK::parse_stream_content(const std::string& content) {
     const std::string TOOL_START = "<|tool_call_start|>";
     const std::string TOOL_END = "<|tool_call_end|>";
     const std::string MARKER_THINK_START = "<think>";

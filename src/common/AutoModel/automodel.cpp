@@ -6,6 +6,7 @@
 /// \note This is a source file for the auto_model class
 
 #include "AutoModel/automodel.hpp"
+#include <algorithm>
 
 
 AutoModel::AutoModel(xrt::device* npu_device_inst, std::string current_model) {
@@ -161,8 +162,11 @@ bool AutoModel::_shared_insert(chat_meta_info_t& meta_info, std::vector<int>& to
 
     // prefix check for tokens and token history to see if we can skip some tokens
     const size_t idx = this->token_history.size();
+    // The incoming prompt can be shorter than the retained history (shorter
+    // follow-up turn, or a restored KV cache), so bound the scan by both.
+    const size_t compare_len = std::min(idx, tokens.size());
     size_t skip_count = 0;
-    for (size_t i = 0; i < idx; i++) {
+    for (size_t i = 0; i < compare_len; i++) {
         if (tokens[i] == this->token_history[i]) {
             skip_count++;
         } 
@@ -174,7 +178,20 @@ bool AutoModel::_shared_insert(chat_meta_info_t& meta_info, std::vector<int>& to
         clear_context();
         skip_count = 0;
     }
+    else if (skip_count == tokens.size()) {
+        // The cached prefix covers the whole prompt, so nothing would be left to
+        // prefill. _chunked_insert cannot produce logits from an empty token list
+        // -- it returns an empty buffer that the sampler below would dereference
+        // -- so drop the cache and re-prefill the prompt in full.
+        clear_context();
+        skip_count = 0;
+    }
     tokens.erase(tokens.begin(), tokens.begin() + skip_count);
+
+    if (tokens.empty()) {
+        header_print("WARNING", "No tokens to prefill");
+        return false;
+    }
 
 
     if (this->total_tokens + tokens.size() >= this->MAX_L){
@@ -326,7 +343,7 @@ std::string AutoModel::_shared_generate(chat_meta_info_t& meta_info, int length_
     return result;
 }
 
-StreamResult AutoModel::_shared_think_tool_calling_pasrsed(const std::string content) {
+StreamResult AutoModel::_shared_think_tool_calling_pasrsed(const std::string& content) {
     const std::string MARKER_THINK_START = "<think>";
     const std::string MARKER_THINK_END = "</think>";
     const std::string MARKER_TOOL_START = "<tool_call>";

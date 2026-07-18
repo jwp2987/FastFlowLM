@@ -45,6 +45,7 @@ Tokenizer::Tokenizer(const std::string& model_path) {
     else {
         this->is_doubled_encoded = false;
     }
+    this->inv_map = this->make_inverse_byte_map();
 }
 
 /// \brief Destructor
@@ -84,14 +85,13 @@ std::unordered_map<uint32_t, uint8_t> Tokenizer::make_inverse_byte_map() {
 std::string Tokenizer::cpt_to_utf8(const std::string& input) {
     static const std::string pattern = "▁";
     static const size_t pattern_size = pattern.size();
-    static auto inv_map = this->make_inverse_byte_map();
+    const auto& inv_map = this->inv_map;
     std::string output = "";
     output.reserve(input.size());
     size_t i = 0;
     if (!this->is_doubled_encoded) { // simply do pattern substitution of "▁" to " ", temporary solution
-        std::string output = "";
         for (size_t i = 0; i < input.size(); i++) {
-            if (i <= input.size() - pattern_size && input.substr(i, pattern_size) == pattern) {
+            if (input.size() - i >= pattern_size && input.compare(i, pattern_size, pattern) == 0) {
                 output += " ";
                 i += pattern_size - 1; // -1 because the loop will increment i by 1
             }

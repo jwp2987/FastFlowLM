@@ -90,7 +90,10 @@ bool Qwen3::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::
     }
 
     size_t n = tokens.size();
-    tokens.resize(n - (this->enable_think ? 0 : 4));
+    // Guard the subtraction: n is size_t, so a short prompt would wrap to a huge
+    // resize rather than trimming the trailing template tokens.
+    const size_t trim = (this->enable_think ? 0 : 4);
+    tokens.resize(n > trim ? n - trim : 0);
 
     bool success = this->_shared_insert(meta_info, tokens, is_cancelled, nullptr);
 
@@ -276,7 +279,7 @@ static void qwen3_parse_tool_blocks(const std::string& response_text, NonStreamR
     }
 }
 
-NonStreamResult Qwen3::parse_nstream_content(const std::string response_text) {
+NonStreamResult Qwen3::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     const std::string think_start_tag = "<think>";
@@ -302,7 +305,7 @@ NonStreamResult Qwen3::parse_nstream_content(const std::string response_text) {
     return result;
 }
 
-StreamResult Qwen3::parse_stream_content(const std::string content) {
+StreamResult Qwen3::parse_stream_content(const std::string& content) {
     return _shared_think_tool_calling_pasrsed(content);
 }
 
@@ -389,7 +392,7 @@ std::string Qwen3_IT::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifo
 }
 
 // Non-stream
-NonStreamResult Qwen3_IT::parse_nstream_content(const std::string response_text) {
+NonStreamResult Qwen3_IT::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     qwen3_parse_tool_blocks(response_text, result);
@@ -402,7 +405,7 @@ NonStreamResult Qwen3_IT::parse_nstream_content(const std::string response_text)
 }
 
 // Stream
-StreamResult Qwen3_IT::parse_stream_content(const std::string content) {
+StreamResult Qwen3_IT::parse_stream_content(const std::string& content) {
     std::string tool_start_tag = "<tool_call>";
     std::string tool_end_tag = "</tool_call>";
 
@@ -534,7 +537,7 @@ bool Qwen3_TK::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, st
     }
 
     size_t n = tokens.size();
-    tokens.resize(n - 2);
+    tokens.resize(n > 2 ? n - 2 : 0);
 
     bool success = this->_shared_insert(meta_info, tokens, is_cancelled, nullptr);
 
@@ -649,7 +652,7 @@ std::string Qwen3_TK::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifo
     return this->generate(meta_info, length_limit, os);
 }
 
-NonStreamResult Qwen3_TK::parse_nstream_content(const std::string response_text) {
+NonStreamResult Qwen3_TK::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     const std::string think_start_tag = "<think>";
@@ -675,7 +678,7 @@ NonStreamResult Qwen3_TK::parse_nstream_content(const std::string response_text)
 }
 
 
-StreamResult Qwen3_TK::parse_stream_content(const std::string content) {
+StreamResult Qwen3_TK::parse_stream_content(const std::string& content) {
     return _shared_think_tool_calling_pasrsed(content);
 }
 
@@ -848,7 +851,7 @@ std::string DeepSeek_r1_0528_8b::generate_with_prompt(chat_meta_info_t& meta_inf
     return this->_shared_generate(meta_info, length_limit, os);
 }
 
-NonStreamResult DeepSeek_r1_0528_8b::parse_nstream_content(const std::string response_text) {
+NonStreamResult DeepSeek_r1_0528_8b::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     std::string content, reasoning_content;
@@ -871,7 +874,7 @@ NonStreamResult DeepSeek_r1_0528_8b::parse_nstream_content(const std::string res
 }
 
 
-StreamResult DeepSeek_r1_0528_8b::parse_stream_content(const std::string content) {
+StreamResult DeepSeek_r1_0528_8b::parse_stream_content(const std::string& content) {
     const std::string MARKER_THINK_START = "<think>";
     const std::string MARKER_THINK_END = "</think>";
 
