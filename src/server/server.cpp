@@ -592,35 +592,38 @@ void WebServer::do_accept() {
 void WebServer::process_next_npu_request() {
     {
         std::lock_guard<std::mutex> lock(npu_queue_mutex_);
-    if (npu_request_queue_.empty()) {
-        NPUAccessManager::release_npu_access();
-        return; // Queue is empty, NPU is free
-    }
-    }
-
-    // NPU cooldown before running the next queued task.
-    constexpr auto npu_cooldown = std::chrono::milliseconds(333);
-    std::this_thread::sleep_for(npu_cooldown);
-
-    std::function<void()> task;
-    size_t remaining = 0;
-    {
-        std::lock_guard<std::mutex> lock(npu_queue_mutex_);
         if (npu_request_queue_.empty()) {
             NPUAccessManager::release_npu_access();
-            return;
+            return; // Queue is empty, NPU is free
         }
-
-        task = npu_request_queue_.front();
-        npu_request_queue_.pop();
-        remaining = npu_request_queue_.size();
     }
 
-    header_print("🟡 ", "Dequeuing NPU request (" + std::to_string(remaining) + " remaining)...");
+    // NPU cooldown before running the next queued task. The delay is unchanged;
+    // it is waited on asynchronously because this runs on the I/O thread that
+    // just finished a request, and blocking it for the whole cooldown stalls
+    // unrelated (non-NPU) requests that thread could otherwise serve.
+    constexpr auto npu_cooldown = std::chrono::milliseconds(333);
+    auto timer = std::make_shared<net::steady_timer>(ioc, npu_cooldown);
+    timer->async_wait([this, timer](const boost::system::error_code&) {
+        std::function<void()> task;
+        size_t remaining = 0;
+        {
+            std::lock_guard<std::mutex> lock(npu_queue_mutex_);
+            if (npu_request_queue_.empty()) {
+                NPUAccessManager::release_npu_access();
+                return;
+            }
 
-    // Post the task to be executed by the io_context
-    net::post(ioc, task);
- 
+            task = npu_request_queue_.front();
+            npu_request_queue_.pop();
+            remaining = npu_request_queue_.size();
+        }
+
+        header_print("🟡 ", "Dequeuing NPU request (" + std::to_string(remaining) + " remaining)...");
+
+        // Post the task to be executed by the io_context
+        net::post(ioc, task);
+    });
 }
 
 ///@brief handle request
