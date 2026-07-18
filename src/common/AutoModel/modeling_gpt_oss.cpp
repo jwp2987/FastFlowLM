@@ -48,7 +48,8 @@ std::string GPT_OSS::apply_chat_template(nlohmann::ordered_json& messages, nlohm
     inputs.extra_context["reasoning_effort"] = this->reasoning_effort;
     inputs.extra_context["model_identity"] = this->model_identity;
     inputs.extra_context["role"] = this->role;
-    //inputs.tools = tools;
+    if (!tools.empty())
+        inputs.tools = tools;
 
     return this->chat_tmpl->apply(inputs);
 }
@@ -63,9 +64,8 @@ bool GPT_OSS::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std
         return false;
     }
     if (!input.messages.empty()) { // already a formated messages, usually from REST API
-        tools = input.tools;
-        templated_text = this->apply_chat_template(input.messages);
-        //templated_text = this->apply_chat_template(input.messages, input.tools);
+        tools = input.tools; // keep for tool-name constrained decoding (get_function_name_tokens/update_state)
+        templated_text = this->apply_chat_template(input.messages, input.tools);
     }
     else if (!input.prompt.empty()) { // a pure text, usually from the cli
         nlohmann::ordered_json messages;
@@ -149,10 +149,14 @@ std::string GPT_OSS::generate(chat_meta_info_t& meta_info, int length_limit, std
         last_sampled_token = sampled_token;
 
         this->profiler_list[TKOEN_DECODE_TIME].start();
+        bool is_tool_call_end = false;
         if (this->is_normal_token(sampled_token)){ // filter out special tokens
             std::string token_str = this->tokenizer->run_time_decoder(sampled_token);
             os << token_str << std::flush;
             result += token_str;
+            // A Harmony tool call terminates with <|call|>, which is NOT an eos token.
+            // Stop here, otherwise the model fabricates a tool result and keeps going.
+            is_tool_call_end = (token_str == "<|call|>");
         }
         this->profiler_list[TKOEN_DECODE_TIME].stop(1);
         token_history.push_back(sampled_token);
@@ -162,6 +166,10 @@ std::string GPT_OSS::generate(chat_meta_info_t& meta_info, int length_limit, std
             break;
         }
         meta_info.generated_tokens++;
+        if (is_tool_call_end){
+            reason = TOOL_DETECTED;
+            break;
+        }
         if ((length_limit > 0) && (meta_info.generated_tokens >= length_limit)){
             reason = MAX_LENGTH_REACHED;
             break;
@@ -323,6 +331,49 @@ NonStreamResult GPT_OSS::parse_nstream_content(const std::string response_text) 
         result.content = response_text.substr(f_start, f_end - f_start);
     }
 
+    // --- Parse tool calls (commentary channel) ---
+    // gpt-oss emits either of these recipient forms in the commentary channel:
+    //   <|channel|>commentary to=functions.NAME <|constrain|>json<|message|>{ARGS}<|call|>
+    //   <|channel|>commentary <|constrain|>functions.NAME<|message|>{ARGS}<|call|>
+    // Anchor on the commentary channel marker (structural token) so we don't match
+    // "functions." mentions inside the analysis/reasoning text, then locate functions.NAME.
+    const std::string commentary_tag = "<|channel|>commentary";
+    const std::string functions_tag = "functions.";
+    const std::string msg_tag = "<|message|>";
+    size_t search_pos = 0;
+    while (true) {
+        size_t c_start = response_text.find(commentary_tag, search_pos);
+        if (c_start == std::string::npos) break;
+        size_t header_begin = c_start + commentary_tag.size();
+        size_t msg_pos = response_text.find(msg_tag, header_begin);
+        if (msg_pos == std::string::npos) break;
+
+        // Function name lives in the header (between the commentary marker and <|message|>).
+        std::string header = response_text.substr(header_begin, msg_pos - header_begin);
+        size_t fpos = header.find(functions_tag);
+        if (fpos == std::string::npos) { search_pos = msg_pos + msg_tag.size(); continue; }
+        size_t nstart = fpos + functions_tag.size();
+        // A function name is [A-Za-z0-9_-]; stop at the first char outside that set
+        // (space, '<', or a stray ')' the model sometimes appends).
+        const std::string name_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+        size_t nend = header.find_first_not_of(name_chars, nstart);
+        std::string name = header.substr(nstart, nend == std::string::npos ? std::string::npos : nend - nstart);
+
+        // Arguments: after <|message|> up to <|call|> (or <|end|> as a fallback).
+        size_t args_begin = msg_pos + msg_tag.size();
+        size_t call_pos = response_text.find("<|call|>", args_begin);
+        size_t end_pos = response_text.find("<|end|>", args_begin);
+        size_t args_end = std::min(call_pos, end_pos);
+        std::string args = (args_end == std::string::npos)
+                               ? response_text.substr(args_begin)
+                               : response_text.substr(args_begin, args_end - args_begin);
+
+        if (!name.empty()) {
+            result.tool_calls_list.emplace_back(name, args);
+        }
+        search_pos = (args_end == std::string::npos) ? response_text.size() : args_end + 1;
+    }
+
     return result;
 }
 
@@ -460,10 +511,13 @@ StreamResult GPT_OSS::parse_stream_content(const std::string content) {
     const std::string MARKER_END = "<|end|>";    
 
     // Markers for Tool Calling
-    const std::string MARKER_TOOL_START = "<|start|>assistant<|channel|>commentary to=functions.";
-    //const std::string MARKER_TOOL_START = "<|start|>assistant<|channel|>commentary <|constrain|>functions.";
-    const std::string MARKER_TOOL_SPLIT = "<|message|>"; 
-    const std::string MARKER_TOOL_END = "<|end|>";   
+    // Match the commentary channel generically; gpt-oss puts the recipient as either
+    // "commentary to=functions.NAME ..." or "commentary <|constrain|>functions.NAME".
+    const std::string MARKER_TOOL_START = "<|start|>assistant<|channel|>commentary";
+    const std::string MARKER_TOOL_FUNC = "functions.";
+    const std::string MARKER_TOOL_SPLIT = "<|message|>";
+    const std::string MARKER_TOOL_END = "<|end|>";
+    const std::string MARKER_TOOL_CALL = "<|call|>"; // Harmony terminates a tool call with <|call|>
 
     StreamResult result;
     buffer_ += content; // Append new chunk to buffer
@@ -518,19 +572,27 @@ StreamResult GPT_OSS::parse_stream_content(const std::string content) {
 
 
         if (current_mode_ == StreamEventType::WAITING) {
-            size_t pos_end = buffer_.find(MARKER_TOOL_END);
+            // A tool call ends at <|call|>; fall back to <|end|> if that ever appears first.
+            size_t pos_call = buffer_.find(MARKER_TOOL_CALL);
+            size_t pos_end_marker = buffer_.find(MARKER_TOOL_END);
+            size_t pos_end = std::min(pos_call, pos_end_marker);
+            size_t term_len = (pos_call != std::string::npos && pos_call <= pos_end_marker)
+                                  ? MARKER_TOOL_CALL.length() : MARKER_TOOL_END.length();
 
             if (pos_end != std::string::npos) {
                 // Format: Name <|constrain|>... <|message|> {JSON}
                 std::string full_tool_str = buffer_.substr(0, pos_end);
 
                 size_t pos_split = full_tool_str.find(MARKER_TOOL_SPLIT);
-                if (pos_split != std::string::npos) {
-                    // 1. Extract Name (Left side)
-                    std::string meta_part = full_tool_str.substr(0, pos_split);
-                    // Name is typically the first word
-                    size_t name_end = meta_part.find_first_of(" <");
-                    result.tool_name = meta_part.substr(0, name_end);
+                std::string meta_part = (pos_split == std::string::npos) ? std::string() : full_tool_str.substr(0, pos_split);
+                size_t fpos = meta_part.find(MARKER_TOOL_FUNC);
+                if (pos_split != std::string::npos && fpos != std::string::npos) {
+                    // 1. Extract Name: the token after "functions." in the header (left side).
+                    // Stop at the first non-identifier char (space, '<', or a stray ')').
+                    size_t nstart = fpos + MARKER_TOOL_FUNC.length();
+                    const std::string name_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+                    size_t name_end = meta_part.find_first_not_of(name_chars, nstart);
+                    result.tool_name = meta_part.substr(nstart, name_end == std::string::npos ? std::string::npos : name_end - nstart);
 
                     // 2. Extract JSON (Right side)
                     result.tool_args_str = full_tool_str.substr(pos_split + MARKER_TOOL_SPLIT.length());
@@ -539,6 +601,11 @@ StreamResult GPT_OSS::parse_stream_content(const std::string content) {
                     result.type = StreamEventType::TOOL_DONE;
                     result.tool_id = "call_" + std::to_string(std::time(nullptr));
                 }
+                else if (pos_split != std::string::npos) {
+                    // Commentary without a functions.* recipient: surface it as content.
+                    result.content = full_tool_str.substr(pos_split + MARKER_TOOL_SPLIT.length());
+                    result.type = StreamEventType::CONTENT;
+                }
                 else {
                     // Fallback if format is wrong
                     result.content = "[Tool Parse Error]";
@@ -546,7 +613,7 @@ StreamResult GPT_OSS::parse_stream_content(const std::string content) {
                 }
 
                 // Clean up and reset
-                buffer_.erase(0, pos_end + MARKER_TOOL_END.length());
+                buffer_.erase(0, pos_end + term_len);
                 waiting_for_header_ = true;
 
                 // Return immediately, don't stream rest
