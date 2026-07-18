@@ -1075,32 +1075,43 @@ void RestHandler::handle_openai_chat_completion(const json& request,
 
         // --- tool_choice handling (OpenAI-compatible) ---
         // "none":  do not expose tools; the model answers directly (hard guarantee).
-        // {"type":"function","function":{"name":"X"}}: expose ONLY tool X, so any tool call
-        //          the model makes is necessarily X (a structural constraint, not a prompt hack).
-        // "required"/"auto"/absent: default behavior; the model decides.
-        // NOTE: OpenAI's "required" (and a hard guarantee for forced-function) cannot be
-        // honored without constrained decoding to force the Harmony commentary channel.
-        // Prompt-level directives were tried and rejected: they confused the model into
-        // emitting malformed tool calls in the wrong channel. So "required" is treated as
-        // "auto" here rather than degrading output with an unreliable nudge.
+        // {"type":"function","function":{"name":"X"}}: expose only X and force a call to X
+        //          via constrained decoding (hard guarantee).
+        // "required": force a tool call via constrained decoding. With a single available
+        //          tool it forces that tool (hard guarantee); with several, it forces the
+        //          commentary recipient prefix and lets the model choose the name
+        //          (best-effort — the model may still decline or emit a malformed name).
+        // "auto"/absent: default; the model decides.
         json tool_choice = request.value("tool_choice", json("auto"));
+        bool force_tool_call = false;
+        std::string forced_tool_name;
         if (tool_choice.is_string()) {
-            if (tool_choice.get<std::string>() == "none") {
+            const std::string tc = tool_choice.get<std::string>();
+            if (tc == "none") {
                 tools = json::array();
+            }
+            else if (tc == "required") {
+                force_tool_call = true;
+                // With a single tool, force it by name for a clean, well-formed call.
+                // With several, let the model choose (recipient-prefix forcing).
+                if (tools.is_array() && tools.size() == 1) {
+                    forced_tool_name = tools[0].value("function", json::object()).value("name", std::string());
+                }
             }
         }
         else if (tool_choice.is_object()) {
-            const std::string forced_name = tool_choice.value("function", json::object()).value("name", std::string());
-            if (!forced_name.empty()) {
+            forced_tool_name = tool_choice.value("function", json::object()).value("name", std::string());
+            if (!forced_tool_name.empty()) {
                 json filtered = json::array();
                 for (const auto& t : tools) {
-                    if (t.value("function", json::object()).value("name", std::string()) == forced_name) {
+                    if (t.value("function", json::object()).value("name", std::string()) == forced_tool_name) {
                         filtered.push_back(t);
                     }
                 }
                 if (!filtered.empty()) {
                     tools = filtered;
                 }
+                force_tool_call = true;
             }
         }
 
@@ -1119,6 +1130,8 @@ void RestHandler::handle_openai_chat_completion(const json& request,
 
         // see if we can use prompt cache
         chat_meta_info_t meta_info;
+        meta_info.force_tool_call = force_tool_call;
+        meta_info.forced_tool_name = forced_tool_name;
         bool can_use_prompt_cache = false;
         if (model != model_used_for_last_message) { // switch models will clear context
             this->prompt_cache.update_message_checksum(current_messages);

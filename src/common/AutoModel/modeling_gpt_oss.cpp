@@ -128,6 +128,36 @@ std::string GPT_OSS::generate(chat_meta_info_t& meta_info, int length_limit, std
         reason = MAX_LENGTH_REACHED;
         return result;
     }
+
+    // tool_choice: required / forced-function. Force the Harmony tool-call header so the
+    // model MUST emit a function call. We feed the header tokens through the engine
+    // (advancing the KV cache exactly as the sampling loop does, but substituting the
+    // forced token for the sampled one); the model then generates the function name
+    // and/or arguments and terminates with <|call|>, handled by the stop check below.
+    if (meta_info.force_tool_call) {
+        // For a specific function, force the full recipient header so the model only fills
+        // in the JSON arguments. For "required" without a specific name (multiple tools),
+        // force the recipient prefix so the model commits to a function call and picks the
+        // name itself; the parsers tolerate the resulting format variations.
+        const std::string forced_prefix = meta_info.forced_tool_name.empty()
+            ? "<|channel|>commentary to=functions."
+            : "<|channel|>commentary to=functions." + meta_info.forced_tool_name + " <|constrain|>json<|message|>";
+        std::vector<int> forced_tokens = this->tokenizer->encode(forced_prefix);
+        for (int ftok : forced_tokens) {
+            if (this->total_tokens >= this->MAX_L) break;
+            this->lm_engine->forward(last_sampled_token); // advance KV with the previous token
+            last_sampled_token = ftok;                    // substitute the forced token
+            this->total_tokens++;
+            meta_info.generated_tokens++;
+            if (this->is_normal_token(ftok)) {
+                std::string s = this->tokenizer->run_time_decoder(ftok);
+                os << s << std::flush;
+                result += s;
+            }
+            token_history.push_back(ftok);
+        }
+    }
+
     while (this->total_tokens < this->MAX_L){
         if (is_cancelled()) {
             reason = CANCEL_DETECTED;
@@ -345,22 +375,32 @@ NonStreamResult GPT_OSS::parse_nstream_content(const std::string response_text) 
         size_t c_start = response_text.find(commentary_tag, search_pos);
         if (c_start == std::string::npos) break;
         size_t header_begin = c_start + commentary_tag.size();
+        // The header ends at <|message|>, or (when forcing confuses the model into dropping
+        // <|message|>) at the first '{' of the JSON arguments, whichever comes first.
         size_t msg_pos = response_text.find(msg_tag, header_begin);
-        if (msg_pos == std::string::npos) break;
+        size_t brace_pos = response_text.find('{', header_begin);
+        size_t header_end, args_begin;
+        if (msg_pos != std::string::npos && (brace_pos == std::string::npos || msg_pos <= brace_pos)) {
+            header_end = msg_pos; args_begin = msg_pos + msg_tag.size();
+        } else if (brace_pos != std::string::npos) {
+            header_end = brace_pos; args_begin = brace_pos;
+        } else {
+            break;
+        }
 
-        // Function name lives in the header (between the commentary marker and <|message|>).
-        std::string header = response_text.substr(header_begin, msg_pos - header_begin);
+        // Function name lives in the header (between the commentary marker and the args).
+        std::string header = response_text.substr(header_begin, header_end - header_begin);
         size_t fpos = header.find(functions_tag);
-        if (fpos == std::string::npos) { search_pos = msg_pos + msg_tag.size(); continue; }
+        if (fpos == std::string::npos) { search_pos = args_begin; continue; }
         size_t nstart = fpos + functions_tag.size();
+        while (nstart < header.size() && (header[nstart] == ' ' || header[nstart] == '\t')) nstart++;
         // A function name is [A-Za-z0-9_-]; stop at the first char outside that set
         // (space, '<', or a stray ')' the model sometimes appends).
         const std::string name_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
         size_t nend = header.find_first_not_of(name_chars, nstart);
         std::string name = header.substr(nstart, nend == std::string::npos ? std::string::npos : nend - nstart);
 
-        // Arguments: after <|message|> up to <|call|> (or <|end|> as a fallback).
-        size_t args_begin = msg_pos + msg_tag.size();
+        // Arguments: from args_begin up to <|call|> (or <|end|> as a fallback).
         size_t call_pos = response_text.find("<|call|>", args_begin);
         size_t end_pos = response_text.find("<|end|>", args_begin);
         size_t args_end = std::min(call_pos, end_pos);
@@ -583,27 +623,38 @@ StreamResult GPT_OSS::parse_stream_content(const std::string content) {
                 // Format: Name <|constrain|>... <|message|> {JSON}
                 std::string full_tool_str = buffer_.substr(0, pos_end);
 
-                size_t pos_split = full_tool_str.find(MARKER_TOOL_SPLIT);
-                std::string meta_part = (pos_split == std::string::npos) ? std::string() : full_tool_str.substr(0, pos_split);
+                // Header ends at <|message|>, or the first '{' when the model drops it.
+                size_t msg_pos = full_tool_str.find(MARKER_TOOL_SPLIT);
+                size_t brace_pos = full_tool_str.find('{');
+                size_t header_end, args_start;
+                if (msg_pos != std::string::npos && (brace_pos == std::string::npos || msg_pos <= brace_pos)) {
+                    header_end = msg_pos; args_start = msg_pos + MARKER_TOOL_SPLIT.length();
+                } else if (brace_pos != std::string::npos) {
+                    header_end = brace_pos; args_start = brace_pos;
+                } else {
+                    header_end = std::string::npos; args_start = std::string::npos;
+                }
+                std::string meta_part = (header_end == std::string::npos) ? std::string() : full_tool_str.substr(0, header_end);
                 size_t fpos = meta_part.find(MARKER_TOOL_FUNC);
-                if (pos_split != std::string::npos && fpos != std::string::npos) {
+                if (header_end != std::string::npos && fpos != std::string::npos) {
                     // 1. Extract Name: the token after "functions." in the header (left side).
                     // Stop at the first non-identifier char (space, '<', or a stray ')').
                     size_t nstart = fpos + MARKER_TOOL_FUNC.length();
+                    while (nstart < meta_part.size() && (meta_part[nstart] == ' ' || meta_part[nstart] == '\t')) nstart++;
                     const std::string name_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
                     size_t name_end = meta_part.find_first_not_of(name_chars, nstart);
                     result.tool_name = meta_part.substr(nstart, name_end == std::string::npos ? std::string::npos : name_end - nstart);
 
                     // 2. Extract JSON (Right side)
-                    result.tool_args_str = full_tool_str.substr(pos_split + MARKER_TOOL_SPLIT.length());
+                    result.tool_args_str = full_tool_str.substr(args_start);
 
                     // 3. Set Result
                     result.type = StreamEventType::TOOL_DONE;
                     result.tool_id = "call_" + std::to_string(std::time(nullptr));
                 }
-                else if (pos_split != std::string::npos) {
+                else if (header_end != std::string::npos) {
                     // Commentary without a functions.* recipient: surface it as content.
-                    result.content = full_tool_str.substr(pos_split + MARKER_TOOL_SPLIT.length());
+                    result.content = full_tool_str.substr(args_start);
                     result.type = StreamEventType::CONTENT;
                 }
                 else {

@@ -103,8 +103,10 @@ struct chat_meta_info_t {
     uint64_t decoding_duration; // in nanoseconds
     stop_reason_t stop_reason;
 	bool restore_allowed;
+	bool force_tool_call;        // tool_choice: require a tool call (constrained decoding)
+	std::string forced_tool_name; // if set, force this specific function
 
-	chat_meta_info_t() : max_prefill_len(0), prompt_tokens(0), generated_tokens(0), total_duration(0), load_duration(0), prefill_duration(0), decoding_duration(0), stop_reason(EOT_DETECTED), restore_allowed(false) {}
+	chat_meta_info_t() : max_prefill_len(0), prompt_tokens(0), generated_tokens(0), total_duration(0), load_duration(0), prefill_duration(0), decoding_duration(0), stop_reason(EOT_DETECTED), restore_allowed(false), force_tool_call(false) {}
 };
 
 typedef enum {
