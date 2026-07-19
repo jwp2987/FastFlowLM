@@ -204,6 +204,11 @@ protected:
 	StreamResult _shared_think_tool_calling_pasrsed(const std::string& content);
 
 public:
+	/// \brief TEMPORARY (Phase 0 KV probe): direct access to the engine so the
+	/// probe can exercise checkpoint/restore/set_context_length/get_k_cache.
+	/// Remove once the primitives are characterised.
+	causal_lm* debug_engine() { return lm_engine.get(); }
+
 	//************ Shared by all models *************/
 	virtual ~AutoModel() = default;
 
@@ -217,6 +222,11 @@ public:
 
 	/// \brief Clear the context
 	void clear_context();
+
+	/// \brief Drop KV cache entries past the first keep_len tokens
+	/// \param keep_len number of leading tokens to retain
+	/// \return true on success; on false the caller must clear_context()
+	bool truncate_context(size_t keep_len);
 
 	/// \brief Get the current model
 	/// \return the current model

@@ -174,18 +174,34 @@ bool AutoModel::_shared_insert(chat_meta_info_t& meta_info, std::vector<int>& to
             break;
         }
     }
-    if (skip_count != idx) {
-        clear_context();
-        skip_count = 0;
+    // The cache holds token_history. Anything past the common prefix is stale and
+    // has to go, but the prefix itself is reusable: the engine can be truncated to
+    // it and only the remaining tokens prefilled. See docs/kv_primitives.md --
+    // truncate-then-reprefill was measured to reconstruct byte-identical state to
+    // an uninterrupted prefill.
+    //
+    // At least one token must be left to prefill, otherwise there are no logits to
+    // sample from. When the prompt is wholly contained in the cache, keep one token
+    // back and re-run it.
+    if (skip_count == tokens.size() && skip_count > 0) {
+        skip_count--;
     }
-    else if (skip_count == tokens.size()) {
-        // The cached prefix covers the whole prompt, so nothing would be left to
-        // prefill. _chunked_insert cannot produce logits from an empty token list
-        // -- it returns an empty buffer that the sampler below would dereference
-        // -- so drop the cache and re-prefill the prompt in full.
+
+    if (skip_count == 0) {
+        // Nothing reusable.
         clear_context();
-        skip_count = 0;
     }
+    else if (skip_count < idx) {
+        // Partial match: drop the stale tail, keep the prefix.
+        if (!truncate_context(skip_count)) {
+            // Truncation failed; fall back to the old all-or-nothing behaviour
+            // rather than running on a cache we can no longer describe.
+            clear_context();
+            skip_count = 0;
+        }
+    }
+    // skip_count == idx: the cache is exactly the prefix already, nothing to do.
+
     tokens.erase(tokens.begin(), tokens.begin() + skip_count);
 
     if (tokens.empty()) {
@@ -469,6 +485,48 @@ StreamResult AutoModel::_shared_think_tool_calling_pasrsed(const std::string& co
 /// \note The function will reset the last token
 /// \note The function will clear the context
 /// \note The function will reset the total tokens
+/// \brief Drop everything in the KV cache past the first keep_len tokens.
+/// \param keep_len number of leading tokens to retain
+/// \return true if the engine and the host mirror were both truncated
+/// \note The host mirror (token_history, total_tokens, checkpoint_his) must stay
+/// consistent with the engine, or _shared_insert's prefix matching will compare
+/// against tokens the cache no longer holds. checkpoint_his is invalidated
+/// rather than truncated: a checkpoint taken before this call describes a cache
+/// state that no longer exists.
+bool AutoModel::truncate_context(size_t keep_len) {
+    if (this->lm_engine == nullptr) {
+        return false;
+    }
+    const size_t current = this->token_history.size();
+    if (keep_len > current) {
+        return false; // growth is meaningless; the engine never wrote those positions
+    }
+    if (keep_len == current) {
+        return true;
+    }
+
+    try {
+        this->lm_engine->set_context_length(static_cast<int>(keep_len));
+    }
+    catch (const std::exception& e) {
+        header_print("WARNING", "Failed to truncate KV cache: " << e.what());
+        return false;
+    }
+
+    const int engine_len = this->lm_engine->get_current_context_length();
+    if (engine_len != static_cast<int>(keep_len)) {
+        header_print("WARNING", "KV truncation mismatch: asked for " << keep_len
+            << ", engine reports " << engine_len);
+        return false;
+    }
+
+    this->token_history.resize(keep_len);
+    this->total_tokens = static_cast<uint32_t>(keep_len);
+    this->checkpoint_his.clear();
+    this->last_token = -1;
+    return true;
+}
+
 void AutoModel::clear_context() {
     this->total_tokens = 0;
     this->last_token = -1;

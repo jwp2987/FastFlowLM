@@ -1154,7 +1154,14 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                     std::to_string(cache_info.total_rounds - cache_info.matched_rounds) + " new to prefill).");
             }
             else {
-                // cannot use cache, clear and re-insert all.
+                // A miss only means the checkpoint cannot be restored wholesale.
+                // It does NOT mean the cache is worthless: _shared_insert compares
+                // the incoming tokens against token_history and truncates the KV
+                // cache to whatever prefix they share, prefilling only the rest.
+                // Clearing here would throw that prefix away before it can be
+                // used, and would also let a short unrelated request wipe a long
+                // conversation's cache. _shared_insert clears on its own when
+                // nothing is reusable.
                 if (cache_info.total_rounds <= 2) {
                     // can_use_cache bails out before comparing anything when the
                     // request has 2 or fewer messages, so matched_rounds and
@@ -1176,8 +1183,7 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                         std::to_string(cache_info.total_rounds) + " rounds, tools " +
                         (cache_info.tools_matched ? "matched" : "changed") + ".");
                 }
-                header_print("FLM", "Clearing context...");
-                auto_chat_engine->clear_context();
+                header_print("FLM", "Reusing any shared prefix; prefilling the remainder.");
             }
         }
 
