@@ -204,11 +204,6 @@ protected:
 	StreamResult _shared_think_tool_calling_pasrsed(const std::string& content);
 
 public:
-	/// \brief TEMPORARY (Phase 0 KV probe): direct access to the engine so the
-	/// probe can exercise checkpoint/restore/set_context_length/get_k_cache.
-	/// Remove once the primitives are characterised.
-	causal_lm* debug_engine() { return lm_engine.get(); }
-
 	//************ Shared by all models *************/
 	virtual ~AutoModel() = default;
 
