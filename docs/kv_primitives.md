@@ -1,5 +1,13 @@
 # Engine KV primitives — measured semantics
 
+> **Support is per engine, not universal.** These results come from probing
+> `llama3.2:1b`. The text engines (llama, qwen2, qwen3, gemma, gemma_text,
+> gpt_oss, lfm2, nanbeige, phi4) implement `set_context_length`. The
+> VL/multimodal engines (qwen2vl, qwen3vl, qwen3_5vl, gemma4e) and the MoE
+> engine (qwen3_6_moe) do **not** — they log "Setting context length is not
+> supported" and leave the cache unchanged. `AutoModel::truncate_context()`
+> detects this on first use and stops asking.
+
 `checkpoint()`, `restore()` and `set_context_length()` are declared in
 `causal_lm.hpp` but the engine implementing them ships as a prebuilt library
 (`libqwen3_npu.so` and friends), so their behaviour is not visible in source.
