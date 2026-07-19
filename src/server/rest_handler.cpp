@@ -1154,8 +1154,28 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                     std::to_string(cache_info.total_rounds - cache_info.matched_rounds) + " new to prefill).");
             }
             else {
-                // cannot use cache, clear and re-insert all
-                header_print("FLM", "Prompt cache miss.");
+                // cannot use cache, clear and re-insert all.
+                if (cache_info.total_rounds <= 2) {
+                    // can_use_cache bails out before comparing anything when the
+                    // request has 2 or fewer messages, so matched_rounds and
+                    // tools_matched are still defaults here and must not be
+                    // reported as if a comparison had happened.
+                    header_print("FLM", std::string("Prompt cache miss: request has only ") +
+                        std::to_string(cache_info.total_rounds) +
+                        " messages; the cache requires more than 2, so a stateless "
+                        "system+user request always re-prefills.");
+                }
+                else {
+                    // matched < cached means an earlier message's content changed
+                    // (a moving system prompt or env block does this every turn);
+                    // cached > total - 2 means the cache holds a different or longer
+                    // conversation, e.g. an interleaved request evicted it.
+                    header_print("FLM", std::string("Prompt cache miss: matched ") +
+                        std::to_string(cache_info.matched_rounds) + " of " +
+                        std::to_string(cache_info.cached_rounds) + " cached rounds, request has " +
+                        std::to_string(cache_info.total_rounds) + " rounds, tools " +
+                        (cache_info.tools_matched ? "matched" : "changed") + ".");
+                }
                 header_print("FLM", "Clearing context...");
                 auto_chat_engine->clear_context();
             }
