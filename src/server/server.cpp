@@ -15,8 +15,8 @@
 #include <locale>
 
 
-// Global NPU access control
-std::mutex g_npu_access_mutex;
+// Global NPU access control. g_npu_in_use is guarded by WebServer::npu_queue_mutex_
+// (see NPUAccessManager::release_npu_access and WebServer::handle_request).
 std::atomic<bool> g_npu_in_use{false};
 
 std::atomic<int> g_npu_active_requests{0};
@@ -130,20 +130,17 @@ void brief_print_message_response(nlohmann::json request) {
 }
 
 // NPU Access Manager implementation
-bool NPUAccessManager::try_acquire_npu_access() {
-    std::lock_guard<std::mutex> lock(g_npu_access_mutex);
-    if (g_npu_in_use.load()) {
-        return false; // NPU is already in use
-    }
-    g_npu_in_use.store(true);
-    g_npu_active_requests.fetch_add(1);
-    return true;
-}
-
+//
+// NOTE: acquisition is performed inline in WebServer::handle_request while
+// holding npu_queue_mutex_, so that the "is the NPU in use?" check is atomic
+// with the enqueue decision and with release below. There is intentionally no
+// standalone try_acquire here: a self-contained acquire using a separate mutex
+// races the release/dequeue and can strand a queued request (lost-wakeup hang).
 void NPUAccessManager::release_npu_access() {
-
+    // Caller must hold WebServer::npu_queue_mutex_. That single mutex serializes
+    // acquire, enqueue, dequeue and release so the queue can never be left with a
+    // pending task while the NPU is marked free.
     header_print("🔵 ", "NPU Lock Released!" );
-    std::lock_guard<std::mutex> lock(g_npu_access_mutex);
     g_npu_in_use.store(false);
     g_npu_active_requests.fetch_sub(1);
 }
@@ -160,9 +157,11 @@ int NPUAccessManager::get_active_npu_requests() {
 bool requires_npu_access(const std::string& method, const std::string& path) {
     // NPU-intensive endpoints that should be restricted to one user at a time
     if (method == "POST") {
-        return path == "/api/generate" || 
-               path == "/api/chat" || 
+        return path == "/api/generate" ||
+               path == "/api/chat" ||
+               path == "/api/embeddings" ||
                path == "/v1/chat/completions" ||
+               path == "/v1/completions" ||
                path == "/v1/audio/transcriptions" ||
                path == "/v1/embeddings";
     }
@@ -591,25 +590,17 @@ void WebServer::do_accept() {
 
 ///@brief process_next_npu_request Handles one queued NPU task at a time
 void WebServer::process_next_npu_request() {
-    {
-        std::lock_guard<std::mutex> lock(npu_queue_mutex_);
-    if (npu_request_queue_.empty()) {
-        NPUAccessManager::release_npu_access();
-        return; // Queue is empty, NPU is free
-    }
-    }
-
-    // NPU cooldown before running the next queued task.
-    constexpr auto npu_cooldown = std::chrono::milliseconds(333);
-    std::this_thread::sleep_for(npu_cooldown);
-
+    // The whole decision runs under npu_queue_mutex_, which is the invariant the
+    // queue relies on: acquire, enqueue, dequeue and release are serialized by
+    // this one mutex, so the queue can never hold a pending task while the NPU
+    // is marked free.
     std::function<void()> task;
     size_t remaining = 0;
     {
         std::lock_guard<std::mutex> lock(npu_queue_mutex_);
         if (npu_request_queue_.empty()) {
             NPUAccessManager::release_npu_access();
-            return;
+            return; // Queue is empty, NPU is free
         }
 
         task = npu_request_queue_.front();
@@ -621,7 +612,6 @@ void WebServer::process_next_npu_request() {
 
     // Post the task to be executed by the io_context
     net::post(ioc, task);
- 
 }
 
 ///@brief handle request
@@ -750,9 +740,12 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             cancellation_token->complete();
             unregister_active_request(request_id);
 
-            if (needs_npu) {
-                this->process_next_npu_request();
-            }
+            // NOTE: the NPU is intentionally NOT released here. The handler may
+            // still mutate shared state (auto_chat_engine, prompt_cache) after
+            // send_response returns (e.g. clear_context()/prompt_cache.reset()).
+            // Releasing the NPU now would let the next queued request start
+            // inference on that shared state concurrently, corrupting the heap.
+            // Release happens once, after the handler fully returns (see below).
 
             if (is_deferred && session) {
                 session->write_response_from_callback();
@@ -769,10 +762,9 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             }
             if (is_final) {
                 unregister_active_request(request_id);
-
-                if (needs_npu) {
-                    this->process_next_npu_request();
-                }
+                // NPU release deferred until the handler fully returns; see the
+                // note in send_response. The streaming handler still touches
+                // auto_chat_engine after the final chunk is sent.
             }
         };
 
@@ -788,10 +780,6 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             res_ref.set(http::field::content_type, "application/json");
             res_ref.prepare_payload();
 
-            if (needs_npu) {
-                this->process_next_npu_request();
-            }
-
             if (is_deferred && session) {
                 session->write_response_from_callback();
             }
@@ -805,13 +793,19 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
             res_ref.set(http::field::content_type, "application/json");
             res_ref.prepare_payload();
 
-            if (needs_npu) {
-                this->process_next_npu_request();
-            }
-
             if (is_deferred && session) {
                 session->write_response_from_callback();
             }
+        }
+
+        // Release the NPU (or hand off to the next queued request) exactly once,
+        // now that the handler has fully returned and is guaranteed to no longer
+        // touch the shared engine/cache. This is the single point of release for
+        // every path that reached the handler; doing it earlier (inside the
+        // response callbacks) allowed the next request to run concurrently with
+        // this handler's trailing cleanup and corrupted the heap under load.
+        if (needs_npu) {
+            this->process_next_npu_request();
         }
     }; // --- End of process_task lambda ---
 
@@ -823,18 +817,47 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
         return false;
     }
 
-    if (NPUAccessManager::try_acquire_npu_access()) {
-        if (needs_npu) {
-            header_print("🟢 ", "NPU Locked!");
+    // Decide whether to acquire the NPU, queue, or reject. The in-use check, the
+    // enqueue, and the release/dequeue in process_next_npu_request() must all be
+    // serialized by the SAME mutex; otherwise a request can enqueue itself in the
+    // window where the finishing request has already seen the queue empty and is
+    // about to release the NPU, leaving that request stranded in the queue with no
+    // one to dequeue it (a lost-wakeup hang). npu_queue_mutex_ is that mutex.
+    enum class npu_decision { acquired, queued, rejected };
+    npu_decision decision;
+    size_t queued_size = 0;
+    {
+        std::lock_guard<std::mutex> lock(npu_queue_mutex_);
+        if (!g_npu_in_use.load()) {
+            g_npu_in_use.store(true);
+            g_npu_active_requests.fetch_add(1);
+            decision = npu_decision::acquired;
         }
-        process_task(false); //  return false
-        return false;
+        else if (npu_request_queue_.size() >= max_npu_queue_) {
+            decision = npu_decision::rejected;
+        }
+        else {
+            // Create a new lambda to bind process_task(true)
+            npu_request_queue_.push([this, process_task]() {
+                process_task(true);
+                });
+            queued_size = npu_request_queue_.size();
+            decision = npu_decision::queued;
+        }
     }
 
-    //const int NPU_QUEUE_LIMIT = 10;
-    std::lock_guard<std::mutex> lock(npu_queue_mutex_);
+    switch (decision) {
+    case npu_decision::acquired:
+        header_print("🟢 ", "NPU Locked!");
+        process_task(false); //  return false
+        return false;
 
-    if (npu_request_queue_.size() >= max_npu_queue_) {
+    case npu_decision::queued:
+        header_print("🕒 ", "NPU busy, request queued (" + std::to_string(queued_size) + "/" + std::to_string(max_npu_queue_) + "): " + key);
+        return true;
+
+    case npu_decision::rejected:
+    default:
         res.result(http::status::service_unavailable);
         res.body() = json{
             {"error", "NPU is in use and request queue is full (limit: " + std::to_string(max_npu_queue_) + "). Please try again later."}
@@ -843,15 +866,6 @@ bool WebServer::handle_request(http::request<http::string_body>& req,
         res.prepare_payload();
         header_print("🚫 ", "NPU busy and queue full, request denied: " + key);
         return false;
-    }
-    else {
-        // Create a new lambda to bind process_task(true)
-        npu_request_queue_.push([this, process_task]() {
-            process_task(true);
-            });
-        header_print("🕒 ", "NPU busy, request queued (" + std::to_string(npu_request_queue_.size()) + "/" + std::to_string(max_npu_queue_) + "): " + key);
-
-        return true;
     }
 }
 

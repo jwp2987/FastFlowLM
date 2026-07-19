@@ -254,7 +254,7 @@ std::string Nanbeige::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifo
     return result;
 }
 
-NonStreamResult Nanbeige::parse_nstream_content(const std::string response_text) {
+NonStreamResult Nanbeige::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     std::string name, arguments;
@@ -320,7 +320,7 @@ NonStreamResult Nanbeige::parse_nstream_content(const std::string response_text)
 }
 
 
-StreamResult Nanbeige::parse_stream_content(const std::string content) {
+StreamResult Nanbeige::parse_stream_content(const std::string& content) {
     const std::string MARKER_THINK_START = "<think>";
     const std::string MARKER_THINK_END = "</think>";
     const std::string MARKER_TOOL_START = "<tool_call>";
@@ -341,7 +341,7 @@ StreamResult Nanbeige::parse_stream_content(const std::string content) {
                 try {
                     auto j = nlohmann::json::parse(tool_content);
                     result.type = StreamEventType::TOOL_DONE;
-                    result.tool_id = "generate_id()";
+                    result.tool_id = generate_tool_call_id();
 
                     if (j.contains("name")) {
                         result.tool_name = j["name"].get<std::string>();

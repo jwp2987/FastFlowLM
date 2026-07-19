@@ -23,7 +23,7 @@
 ///@brief Normalize messages by merging consecutive user messages (like Ollama does)
 ///@param messages the original messages
 ///@return normalized messages with consecutive user messages merged
-static json normalize_messages(json messages) {
+static json normalize_messages(const json& messages) {
     if (messages.empty()) return messages;
 
     json normalized = nlohmann::ordered_json::array();
@@ -124,22 +124,27 @@ static json normalize_messages(json messages) {
     return normalized;
 }
 
-static json normalize_template(json messages) {
+static json normalize_template(const json& messages) {
     json template_message = json::array();
 
-    for (auto& message : messages) {
+    for (const auto& message : messages) {
         json new_message = message;
         std::string merged_text;
         nlohmann::ordered_json::array_t merged_images;
         nlohmann::ordered_json::array_t merged_audio;
 
-        if (message["content"].is_string()) {
+        // A missing "content" is treated as empty, matching what the previous
+        // non-const operator[] produced by default-inserting null.
+        static const json null_content;
+        const json& content_ref = message.contains("content") ? message.at("content") : null_content;
+
+        if (content_ref.is_string()) {
             // Simple format: just text
-            merged_text = message["content"].get<std::string>();
+            merged_text = content_ref.get<std::string>();
         }
-        else if (message["content"].is_array()) {
+        else if (content_ref.is_array()) {
             // Structured format: extract text and image URLs
-            for (auto& contentItem : message["content"]) {
+            for (const auto& contentItem : content_ref) {
                 if (contentItem.contains("type") && contentItem["type"] == "text") {
                     merged_text += contentItem["text"].get<std::string>();
                 }
@@ -207,7 +212,7 @@ static json try_parse_json_value(const std::string& s) {
 ///@brief Convert OpenAI-style assistant tool_calls + following tool messages into the
 /// Gemma4 chat-template format, which expects a single assistant message containing
 /// both `tool_calls` and `tool_responses` (with `{name, response}` entries).
-static json convert_tool_responses_gemma4(json messages) {
+static json convert_tool_responses_gemma4(const json& messages) {
     json converted_messages = json::array();
 
     size_t i = 0;
@@ -1073,6 +1078,48 @@ void RestHandler::handle_openai_chat_completion(const json& request,
         json tools = request.value("tools", json::array());
         json options = request.value("options", json::object());
 
+        // --- tool_choice handling (OpenAI-compatible) ---
+        // "none":  do not expose tools; the model answers directly (hard guarantee).
+        // {"type":"function","function":{"name":"X"}}: expose only X and force a call to X
+        //          via constrained decoding (hard guarantee).
+        // "required": force a tool call via constrained decoding. With a single available
+        //          tool it forces that tool (hard guarantee); with several, it forces the
+        //          commentary recipient prefix and lets the model choose the name
+        //          (best-effort — the model may still decline or emit a malformed name).
+        // "auto"/absent: default; the model decides.
+        json tool_choice = request.value("tool_choice", json("auto"));
+        bool force_tool_call = false;
+        std::string forced_tool_name;
+        if (tool_choice.is_string()) {
+            const std::string tc = tool_choice.get<std::string>();
+            if (tc == "none") {
+                tools = json::array();
+            }
+            else if (tc == "required") {
+                force_tool_call = true;
+                // With a single tool, force it by name for a clean, well-formed call.
+                // With several, let the model choose (recipient-prefix forcing).
+                if (tools.is_array() && tools.size() == 1) {
+                    forced_tool_name = tools[0].value("function", json::object()).value("name", std::string());
+                }
+            }
+        }
+        else if (tool_choice.is_object()) {
+            forced_tool_name = tool_choice.value("function", json::object()).value("name", std::string());
+            if (!forced_tool_name.empty()) {
+                json filtered = json::array();
+                for (const auto& t : tools) {
+                    if (t.value("function", json::object()).value("name", std::string()) == forced_tool_name) {
+                        filtered.push_back(t);
+                    }
+                }
+                if (!filtered.empty()) {
+                    tools = filtered;
+                }
+                force_tool_call = true;
+            }
+        }
+
         auto load_start_time = time_utils::now();
         if (!ensure_model_loaded(model)) {
             json error_response = {{"error", "Failed to load " + model + " model!"}};
@@ -1088,6 +1135,8 @@ void RestHandler::handle_openai_chat_completion(const json& request,
 
         // see if we can use prompt cache
         chat_meta_info_t meta_info;
+        meta_info.force_tool_call = force_tool_call;
+        meta_info.forced_tool_name = forced_tool_name;
         bool can_use_prompt_cache = false;
         if (model != model_used_for_last_message) { // switch models will clear context
             this->prompt_cache.update_message_checksum(current_messages);
@@ -1105,10 +1154,36 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                     std::to_string(cache_info.total_rounds - cache_info.matched_rounds) + " new to prefill).");
             }
             else {
-                // cannot use cache, clear and re-insert all
-                header_print("FLM", "Prompt cache miss.");
-                header_print("FLM", "Clearing context...");
-                auto_chat_engine->clear_context();
+                // A miss only means the checkpoint cannot be restored wholesale.
+                // It does NOT mean the cache is worthless: _shared_insert compares
+                // the incoming tokens against token_history and truncates the KV
+                // cache to whatever prefix they share, prefilling only the rest.
+                // Clearing here would throw that prefix away before it can be
+                // used, and would also let a short unrelated request wipe a long
+                // conversation's cache. _shared_insert clears on its own when
+                // nothing is reusable.
+                if (cache_info.total_rounds <= 2) {
+                    // can_use_cache bails out before comparing anything when the
+                    // request has 2 or fewer messages, so matched_rounds and
+                    // tools_matched are still defaults here and must not be
+                    // reported as if a comparison had happened.
+                    header_print("FLM", std::string("Prompt cache miss: request has only ") +
+                        std::to_string(cache_info.total_rounds) +
+                        " messages; the cache requires more than 2, so a stateless "
+                        "system+user request always re-prefills.");
+                }
+                else {
+                    // matched < cached means an earlier message's content changed
+                    // (a moving system prompt or env block does this every turn);
+                    // cached > total - 2 means the cache holds a different or longer
+                    // conversation, e.g. an interleaved request evicted it.
+                    header_print("FLM", std::string("Prompt cache miss: matched ") +
+                        std::to_string(cache_info.matched_rounds) + " of " +
+                        std::to_string(cache_info.cached_rounds) + " cached rounds, request has " +
+                        std::to_string(cache_info.total_rounds) + " rounds, tools " +
+                        (cache_info.tools_matched ? "matched" : "changed") + ".");
+                }
+                header_print("FLM", "Reusing any shared prefix; prefilling the remainder.");
             }
         }
 
@@ -1146,21 +1221,23 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                         return;
                     }
 
-                    json error_response = {
-                        {"error", {
-                        {"message", "Max length reached!"},
-                        {"type", "model_error"},
-                        {"code", 400}
-                        }}
-                    };
-                    send_response(error_response);
+                    // The client is reading an SSE stream: a bare JSON body is
+                    // unparseable to it and surfaces as a generic stream error
+                    // rather than as this message. Report the real reason as a
+                    // properly terminated SSE stream instead.
+                    header_print("WARNING", "Prompt exceeds context window ("
+                        << auto_chat_engine->get_max_length() << " tokens); rejecting request.");
+                    ostream.send_error("Max length reached! The prompt exceeds the model's context window of "
+                        + std::to_string(auto_chat_engine->get_max_length())
+                        + " tokens. Shorten the conversation or reduce tool output; retrying "
+                          "the same request will fail identically.",
+                        "context_length_exceeded", 400);
                     this->auto_chat_engine->clear_context();
                     this->prompt_cache.reset();
                     return;
                 }
             } catch (const std::exception& e) {
-                json error_response = {{"error", e.what()}};
-                send_response(error_response);
+                ostream.send_error(e.what(), "model_error", 500);
                 this->auto_chat_engine->clear_context();
                 this->prompt_cache.reset();
                 return;
@@ -1169,8 +1246,7 @@ void RestHandler::handle_openai_chat_completion(const json& request,
             try {
                 auto_chat_engine->generate(meta_info, length_limit, ostream, [&] { return cancellation_token->cancelled(); });
             } catch (const std::exception& e) {
-                json error_response = {{"error", e.what()}};
-                send_response(error_response);
+                ostream.send_error(e.what(), "model_error", 500);
                 this->auto_chat_engine->clear_context();
                 this->prompt_cache.reset();
                 return;

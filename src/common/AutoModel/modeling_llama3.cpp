@@ -258,7 +258,7 @@ std::string DeepSeek_r1_8b::generate_with_prompt(chat_meta_info_t& meta_info, lm
     return this->generate(meta_info, length_limit, os);
 }
 
-NonStreamResult DeepSeek_r1_8b::parse_nstream_content(const std::string response_text) {
+NonStreamResult DeepSeek_r1_8b::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     std::string content, reasoning_content;
@@ -280,7 +280,7 @@ NonStreamResult DeepSeek_r1_8b::parse_nstream_content(const std::string response
     return result;
 }
 
-StreamResult DeepSeek_r1_8b::parse_stream_content(const std::string content) {
+StreamResult DeepSeek_r1_8b::parse_stream_content(const std::string& content) {
     const std::string MARKER_THINK_START = "<think>";
     const std::string MARKER_THINK_END = "</think>";
 

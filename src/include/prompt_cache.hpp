@@ -31,7 +31,7 @@ private:
         // Hash only the content-bearing fields so messages produced by
         // different backends (e.g. local vs cloud) compare equal as long
         // as their semantic payload matches.
-        uint64_t sum = 0;
+        uint64_t sum = FNV_OFFSET_BASIS;
         auto mix = [&](const char* key) {
             if (message.contains(key)) {
                 const std::string s = message[key].dump();
@@ -66,23 +66,21 @@ private:
         return tool_checksums;
     }
 
-    uint64_t _calculate_checksum(const void* p, size_t len, uint64_t sum = 0) {
-        const uint8_t* data = reinterpret_cast<const uint8_t*>(p);
-        uint64_t _sum = sum;
+    // FNV-1a. The previous additive word sum was order-independent, so any
+    // reordering of 8-byte-aligned words collided (e.g. "AAAAAAAABBBBBBBB" and
+    // "BBBBBBBBAAAAAAAA" hashed equal). It also read the payload through an
+    // unaligned uint64_t*. Byte-at-a-time keeps this position-sensitive.
+    static constexpr uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
+    static constexpr uint64_t FNV_PRIME = 1099511628211ULL;
 
-        const uint64_t* p64 = reinterpret_cast<const uint64_t*>(data);
-        size_t blocks = len / sizeof(uint64_t);
-        for (size_t i = 0; i < blocks; ++i) {
-            _sum += p64[i];
+    uint64_t _calculate_checksum(const void* p, size_t len, uint64_t sum = FNV_OFFSET_BASIS) {
+        const uint8_t* data = static_cast<const uint8_t*>(p);
+        uint64_t hash = sum;
+        for (size_t i = 0; i < len; ++i) {
+            hash ^= static_cast<uint64_t>(data[i]);
+            hash *= FNV_PRIME;
         }
-
-        const uint8_t* p8 = data + blocks * sizeof(uint64_t);
-        size_t remain = len % sizeof(uint64_t);
-        for (size_t i = 0; i < remain; ++i) {
-            _sum += p8[i];
-        }
-
-        return _sum;
+        return hash;
     }
     
 public:

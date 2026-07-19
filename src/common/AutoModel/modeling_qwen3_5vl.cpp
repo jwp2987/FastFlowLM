@@ -282,7 +282,10 @@ bool Qwen3_5VL::insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, s
     }
 
     size_t n = tokens.size();
-    tokens.resize(n - (this->enable_think ? 2 : 4));
+    // Guard the subtraction: n is size_t, so a short prompt would wrap to a huge
+    // resize rather than trimming the trailing template tokens.
+    const size_t trim = (this->enable_think ? 2 : 4);
+    tokens.resize(n > trim ? n - trim : 0);
 
     bool success = has_images
         ? this->_shared_insert(meta_info, tokens, is_cancelled, &image_payload, last_image_token_index)
@@ -433,7 +436,7 @@ std::string Qwen3_5VL::generate_with_prompt(chat_meta_info_t& meta_info, lm_unif
 }
 
 // Non-stream
-NonStreamResult Qwen3_5VL::parse_nstream_content(const std::string response_text) {
+NonStreamResult Qwen3_5VL::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     std::string start_tag = "<tool_call>";
@@ -555,15 +558,15 @@ NonStreamResult Qwen3_5VL::parse_nstream_content(const std::string response_text
 }
 
 // Stream
-StreamResult Qwen3_5VL::parse_stream_content(const std::string content) {
+StreamResult Qwen3_5VL::parse_stream_content(const std::string& content) {
     return parse_stream_content_impl(content, false);
 }
 
-StreamResult Qwen3_5VL::parse_stream_content_final(const std::string content) {
+StreamResult Qwen3_5VL::parse_stream_content_final(const std::string& content) {
     return parse_stream_content_impl(content, true);
 }
 
-StreamResult Qwen3_5VL::parse_stream_content_impl(const std::string content, bool is_final) {
+StreamResult Qwen3_5VL::parse_stream_content_impl(const std::string& content, bool is_final) {
     const std::string MARKER_THINK_START = "<think>";
     const std::string MARKER_THINK_END = "</think>";
     const std::string MARKER_TOOL_START = "<tool_call>";
@@ -623,7 +626,7 @@ StreamResult Qwen3_5VL::parse_stream_content_impl(const std::string content, boo
 
                 try {
                     result.type = StreamEventType::TOOL_DONE;
-                    result.tool_id = "call_" + std::to_string(std::time(nullptr));
+                    result.tool_id = generate_tool_call_id();
 
                     // parse function name
                     std::string func_open = "<function=";

@@ -42,8 +42,7 @@ using json = nlohmann::ordered_json;
 class RestHandler;
 class HttpSession;
 
-// Global NPU access control
-extern std::mutex g_npu_access_mutex;
+// Global NPU access control. g_npu_in_use is guarded by WebServer::npu_queue_mutex_.
 extern std::atomic<bool> g_npu_in_use;
 extern std::atomic<int> g_npu_active_requests;
 
@@ -54,10 +53,11 @@ bool requires_npu_access(const std::string& method, const std::string& path);
 ///@return the current time string
 std::string get_current_time_string();
 
-// NPU access manager class
+// NPU access manager class.
+// Acquisition is done inline in WebServer::handle_request under npu_queue_mutex_;
+// release_npu_access must likewise be called while holding that mutex.
 class NPUAccessManager {
 public:
-    static bool try_acquire_npu_access();
     static void release_npu_access();
     static bool is_npu_available();
     static int get_active_npu_requests();

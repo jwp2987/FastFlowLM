@@ -7,6 +7,7 @@
 #pragma once
 
 #include <ctime>
+#include <atomic>
 #include <iomanip>
 #include <sstream>
 #include <memory>
@@ -51,6 +52,17 @@ enum class StreamEventType {
 	REASONING,      
 	TOOL_DONE,
 };
+
+/// \brief Generate a unique id for a tool call.
+/// \note Clients correlate a tool result back to its call by this id, so two
+/// calls must never share one. std::time() alone has one-second resolution, so
+/// parallel tool calls in a single response collided; the counter makes each id
+/// unique regardless of how fast they are emitted.
+inline std::string generate_tool_call_id() {
+	static std::atomic<uint64_t> counter{0};
+	return "call_" + std::to_string(static_cast<uint64_t>(std::time(nullptr)))
+		+ "_" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
+}
 
 struct StreamResult {
 	StreamEventType type;
@@ -103,8 +115,10 @@ struct chat_meta_info_t {
     uint64_t decoding_duration; // in nanoseconds
     stop_reason_t stop_reason;
 	bool restore_allowed;
+	bool force_tool_call;        // tool_choice: require a tool call (constrained decoding)
+	std::string forced_tool_name; // if set, force this specific function
 
-	chat_meta_info_t() : max_prefill_len(0), prompt_tokens(0), generated_tokens(0), total_duration(0), load_duration(0), prefill_duration(0), decoding_duration(0), stop_reason(EOT_DETECTED), restore_allowed(false) {}
+	chat_meta_info_t() : max_prefill_len(0), prompt_tokens(0), generated_tokens(0), total_duration(0), load_duration(0), prefill_duration(0), decoding_duration(0), stop_reason(EOT_DETECTED), restore_allowed(false), force_tool_call(false) {}
 };
 
 typedef enum {
@@ -146,6 +160,12 @@ protected:
 	std::unique_ptr<npu_xclbin_manager> npu = nullptr;
 	bool enable_preemption = false;
     std::vector<int> checkpoint_his;
+
+	/// \brief Whether the loaded engine implements KV truncation.
+	/// \note Unknown until the first attempt; set to no if the engine ignores the
+	/// request, so it is never asked again for the lifetime of this model.
+	enum class kv_truncation_support_t { unknown, yes, no };
+	kv_truncation_support_t kv_truncation_support = kv_truncation_support_t::unknown;
 
 
 	uint32_t MAX_L = 0;
@@ -199,7 +219,7 @@ protected:
 	buffer<bf16> _chunked_insert(chat_meta_info_t& meta_info, std::vector<int>& tokens, std::function<bool()> is_cancelled = [] { return false; }, void* payload = nullptr, int first_len_run = 0);
 	std::string _shared_generate(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled = [] { return false; });
 
-	StreamResult _shared_think_tool_calling_pasrsed(const std::string content);
+	StreamResult _shared_think_tool_calling_pasrsed(const std::string& content);
 
 public:
 	//************ Shared by all models *************/
@@ -215,6 +235,14 @@ public:
 
 	/// \brief Clear the context
 	void clear_context();
+
+	/// \brief Drop KV cache entries past the first keep_len tokens
+	/// \param keep_len number of leading tokens to retain
+	/// \return true on success; on false the caller must clear_context()
+	/// \note Not every engine implements truncation (the VL/multimodal and MoE
+	/// engines do not). Support is detected on first use and remembered, so an
+	/// engine that cannot truncate is asked exactly once.
+	bool truncate_context(size_t keep_len);
 
 	/// \brief Get the current model
 	/// \return the current model
@@ -387,13 +415,13 @@ public:
 
 	virtual std::string apply_chat_template(nlohmann::ordered_json& messages, nlohmann::ordered_json tools = nlohmann::ordered_json::object()) = 0;
 
-	virtual NonStreamResult parse_nstream_content(const std::string response_text) {
+	virtual NonStreamResult parse_nstream_content(const std::string& response_text) {
 		NonStreamResult result;
 		result.content = response_text;
 		return result;
 	}
 
-	virtual StreamResult parse_stream_content(const std::string content) {
+	virtual StreamResult parse_stream_content(const std::string& content) {
 		//header_print("AUTOMODEL PARSING", content);
 
 		StreamResult result;
@@ -403,7 +431,7 @@ public:
 		return result;
 	}
 
-	virtual StreamResult parse_stream_content_final(const std::string content) {
+	virtual StreamResult parse_stream_content_final(const std::string& content) {
 		if (!content.empty()) {
 			return parse_stream_content(content);
 		}

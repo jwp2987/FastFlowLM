@@ -71,7 +71,10 @@ public:
     FFT400(const FFT400&) = delete;
     FFT400& operator=(const FFT400&) = delete;
 
-    std::vector<float> compute_power(const std::vector<float>& input) const {
+    /// \brief Compute the power spectrum into a caller-supplied buffer.
+    /// \param input the 400-sample windowed frame
+    /// \param power_out destination for N/2 + 1 floats
+    void compute_power(const std::vector<float>& input, float* power_out) const {
         if (input.size() != N) {
             throw std::runtime_error("FFT400 input must have 400 samples, got " + std::to_string(input.size()));
         }
@@ -85,13 +88,16 @@ public:
         fftwf_execute(plan);
 
         // Extract power spectrum (magnitude squared)
-        std::vector<float> power(N / 2 + 1);
         for (int k = 0; k <= N / 2; ++k) {
             float real = out[k][0];
             float imag = out[k][1];
-            power[k] = real * real + imag * imag;
+            power_out[k] = real * real + imag * imag;
         }
+    }
 
+    std::vector<float> compute_power(const std::vector<float>& input) const {
+        std::vector<float> power(N / 2 + 1);
+        compute_power(input, power.data());
         return power;
     }
 

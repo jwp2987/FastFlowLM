@@ -287,7 +287,7 @@ std::string Qwen3VL::generate_with_prompt(chat_meta_info_t& meta_info, lm_unifor
 }
 
 // Non-stream
-NonStreamResult Qwen3VL::parse_nstream_content(const std::string response_text) {
+NonStreamResult Qwen3VL::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     const std::string tool_start_tag = "<tool_call>";
@@ -346,7 +346,7 @@ NonStreamResult Qwen3VL::parse_nstream_content(const std::string response_text) 
 }
 
 // Stream
-StreamResult Qwen3VL::parse_stream_content(const std::string content) {
+StreamResult Qwen3VL::parse_stream_content(const std::string& content) {
     std::string tool_start_tag = "<tool_call>";
     std::string tool_end_tag = "</tool_call>";
 
@@ -368,7 +368,7 @@ StreamResult Qwen3VL::parse_stream_content(const std::string content) {
 
             result.type = StreamEventType::TOOL_DONE;
             //result.tool_id = generate_id();
-            result.tool_id = "call_" + std::to_string(std::time(nullptr));
+            result.tool_id = generate_tool_call_id();
 
             if (j.contains("name")) {
                 result.tool_name = j["name"].get<std::string>();

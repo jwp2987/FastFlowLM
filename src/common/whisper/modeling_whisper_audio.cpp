@@ -725,8 +725,11 @@ void Whisper::_preprocess_audio(buffer<bf16>& mel_features, std::vector<float>& 
     int n_frames = (static_cast<int>(padded.size()) - N_FFT) / HOP_LENGTH + 1; // = 3000
     int n_bins = N_FFT / 2 + 1;
 
+    // Frame-major ([frame][bin]) so both the FFT writes below and the mel filter
+    // accumulation walk contiguous memory; bin-major strides n_frames floats per
+    // step and misses a cache line on nearly every access.
     buffer<float> spec_buffer(n_bins * n_frames);
-    tensor_2d<float> spec_tensor(spec_buffer, n_frames);
+    float* spec_data = spec_buffer.data();
     std::vector<float> fft_buffer(N_FFT);
 
     for (int f = 0; f < n_frames; ++f) {
@@ -757,46 +760,39 @@ void Whisper::_preprocess_audio(buffer<bf16>& mel_features, std::vector<float>& 
             _mm256_storeu_ps(&fft_buffer[i], result_vec);
         }
 
-        auto power = fft_400->compute_power(fft_buffer);
-  
-        for (int k = 0; k < n_bins; ++k) {
-            spec_tensor[k][f] = power[k];
-        }
+        fft_400->compute_power(fft_buffer, spec_data + (size_t)f * n_bins);
     }
 
-    // the spec_tensor is 201 x 3000
+    // the spectrogram is 3000 x 201 (frame-major)
     // use 128 x 201 to multiply with 201 x 3000 to get 128 x 3000
-    // --- Apply mel filters ---
+    // --- Apply mel filters, then log in place ---
+    // mel_spec is frame-major too, and doubles as the log_spec buffer.
     buffer<float> mel_spec(n_frames * n_mels);
-    tensor_2d<float> mel_spec_tensor(mel_spec, n_frames);
+    float* mel_data = mel_spec.data();
+    float global_max = -std::numeric_limits<float>::infinity();
 
     for (int f = 0; f < n_frames; ++f) {
+        const float* spec_row = spec_data + (size_t)f * n_bins;
+        float* mel_row = mel_data + (size_t)f * n_mels;
         float *mel_val = mel_filter_dense;
         for (int m = 0; m < n_mels; ++m) {
             float s = 0.0f;
+            const float* spec_seg = spec_row + mel_start_idx[m];
             for (int k = 0; k < mel_count[m]; ++k){
-                int mel_idx = mel_start_idx[m] + k;
-                s += spec_tensor[mel_idx][f] * (*mel_val++);
+                s += spec_seg[k] * (*mel_val++);
             }
-            mel_spec_tensor[m][f] = s;
-        }
-    }
-
-    // --- Log + normalize ---
-    float global_max = -std::numeric_limits<float>::infinity();
-    buffer<float> log_spec(n_frames * n_mels);
-    tensor_2d<float> log_spec_tensor(log_spec, n_frames);
-    for (int f = 0; f < n_frames; ++f) {
-        for (int m = 0; m < n_mels; ++m) {
-            float v = std::log10(std::max(mel_spec_tensor[m][f], 1e-10f));
-            log_spec_tensor[m][f] = v;
+            float v = std::log10(std::max(s, 1e-10f));
+            mel_row[m] = v;
             global_max = std::max(global_max, v);
         }
     }
-    
+
+    // --- Normalize into the [mel][frame] layout the encoder expects ---
+    const float floor_val = global_max - 8.0f;
     for (int f = 0; f < n_frames; ++f) {
+        const float* mel_row = mel_data + (size_t)f * n_mels;
         for (int m = 0; m < n_mels; ++m) {
-            float v = std::max(log_spec_tensor[m][f], global_max - 8.0f);
+            float v = std::max(mel_row[m], floor_val);
             v = (v + 4.0f) / 4.0f;
             mel_features[m * n_frames + f] = (bf16)v;
         }

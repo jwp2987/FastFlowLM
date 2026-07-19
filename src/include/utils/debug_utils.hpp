@@ -8,6 +8,20 @@
 #include <iostream>
 #include <iomanip>
 #include <string>
+#include <sstream>
+#include <mutex>
+
+/// \brief Write one already-composed log line atomically.
+/// \note The server logs from several I/O threads at once. Building the message
+/// in an ostringstream is not sufficient on its own, because emitting it still
+/// takes multiple operator<< calls on the stream and another thread can be
+/// scheduled between them -- which produced interleaved lines such as
+/// "[LOG]  [Time stamp: ...LOG]". Serialising the write keeps lines whole.
+inline void flm_log_write(std::ostream& os, const std::string& line) {
+    static std::mutex log_mutex;
+    std::lock_guard<std::mutex> lock(log_mutex);
+    os << line << std::flush;
+}
 
 #ifndef VERBOSE
 #define VERBOSE 0
@@ -110,8 +124,8 @@
 #define header_print(header, msg) \
     do { \
         std::ostringstream oss; \
-        oss << msg; \
-        std::cout << '[' << header << "]  " << oss.str() << std::endl; \
+        oss << '[' << header << "]  " << msg << '\n'; \
+        flm_log_write(std::cout, oss.str()); \
     } while (0)
 
 /// \brief header_print_r macro, in red color
@@ -120,8 +134,8 @@
 #define header_print_r(header, msg) \
     do { \
         std::ostringstream oss; \
-        oss << msg; \
-        std::cerr << "\033[31m[" << header << "]  " << oss.str() << "\033[0m" << std::endl; \
+        oss << "\033[31m[" << header << "]  " << msg << "\033[0m" << '\n'; \
+        flm_log_write(std::cerr, oss.str()); \
     } while (0)
 
     
@@ -131,8 +145,8 @@
 #define header_print_g(header, msg) \
     do { \
         std::ostringstream oss; \
-        oss << msg; \
-        std::cout << "\033[32m[" << header << "]  " << oss.str() << "\033[0m" << std::endl; \
+        oss << "\033[32m[" << header << "]  " << msg << "\033[0m" << '\n'; \
+        flm_log_write(std::cout, oss.str()); \
     } while (0)
 
 
@@ -142,8 +156,8 @@
 #define header_print_b(header, msg) \
     do { \
         std::ostringstream oss; \
-        oss << msg; \
-        std::cout << "\033[34m[" << header << "]  " << oss.str() << "\033[0m" << std::endl; \
+        oss << "\033[34m[" << header << "]  " << msg << "\033[0m" << '\n'; \
+        flm_log_write(std::cout, oss.str()); \
     } while (0)
 
 /// \brief box_print macro

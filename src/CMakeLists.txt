@@ -354,6 +354,7 @@ endif()
 
 target_compile_definitions(flm PUBLIC
     DISABLE_ABI_CHECK=1
+    USEAVX2=1
     CMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
     CMAKE_XCLBIN_PREFIX="${CMAKE_XCLBIN_PREFIX}"
     __FLM_VERSION__=\"${FLM_VERSION}\"
@@ -396,6 +397,9 @@ endif()
 # Link static libraries first
 if(MSVC)
     target_link_libraries(flm PUBLIC ${STATIC_LIBS})
+    # Matches the -mavx -mavx2 used on the GCC/Clang side; required by the
+    # USEAVX2 code paths.
+    target_compile_options(flm PUBLIC /arch:AVX2)
 endif()
 
 # ———————————————————————————————————————————————
