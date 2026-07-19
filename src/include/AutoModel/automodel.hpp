@@ -149,6 +149,12 @@ protected:
 	bool enable_preemption = false;
     std::vector<int> checkpoint_his;
 
+	/// \brief Whether the loaded engine implements KV truncation.
+	/// \note Unknown until the first attempt; set to no if the engine ignores the
+	/// request, so it is never asked again for the lifetime of this model.
+	enum class kv_truncation_support_t { unknown, yes, no };
+	kv_truncation_support_t kv_truncation_support = kv_truncation_support_t::unknown;
+
 
 	uint32_t MAX_L = 0;
 	int last_token = -1;
@@ -221,6 +227,9 @@ public:
 	/// \brief Drop KV cache entries past the first keep_len tokens
 	/// \param keep_len number of leading tokens to retain
 	/// \return true on success; on false the caller must clear_context()
+	/// \note Not every engine implements truncation (the VL/multimodal and MoE
+	/// engines do not). Support is detected on first use and remembered, so an
+	/// engine that cannot truncate is asked exactly once.
 	bool truncate_context(size_t keep_len);
 
 	/// \brief Get the current model

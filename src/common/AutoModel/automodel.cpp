@@ -137,6 +137,9 @@ void AutoModel::_shared_load_model(std::string model_path, json model_info, int 
     
     this->is_model_loaded = true;
 
+    // Truncation support is a property of the engine, so re-detect it per model.
+    this->kv_truncation_support = kv_truncation_support_t::unknown;
+
     this->token_history.clear();
     this->token_history.reserve(this->MAX_L);
     this->tokenizer = std::make_unique<Tokenizer>(this->model_path);
@@ -497,6 +500,12 @@ bool AutoModel::truncate_context(size_t keep_len) {
     if (this->lm_engine == nullptr) {
         return false;
     }
+    // The VL/multimodal and MoE engines do not implement set_context_length; they
+    // log "not supported" and leave the cache alone. Asking once is how we find
+    // out, but asking every request would spam the log and waste the call.
+    if (this->kv_truncation_support == kv_truncation_support_t::no) {
+        return false;
+    }
     const size_t current = this->token_history.size();
     if (keep_len > current) {
         return false; // growth is meaningless; the engine never wrote those positions
@@ -510,15 +519,20 @@ bool AutoModel::truncate_context(size_t keep_len) {
     }
     catch (const std::exception& e) {
         header_print("WARNING", "Failed to truncate KV cache: " << e.what());
+        this->kv_truncation_support = kv_truncation_support_t::no;
         return false;
     }
 
     const int engine_len = this->lm_engine->get_current_context_length();
     if (engine_len != static_cast<int>(keep_len)) {
-        header_print("WARNING", "KV truncation mismatch: asked for " << keep_len
-            << ", engine reports " << engine_len);
+        if (this->kv_truncation_support == kv_truncation_support_t::unknown) {
+            header_print("FLM", "This engine does not support KV truncation; "
+                "prompts that diverge from the cache will be prefilled in full.");
+        }
+        this->kv_truncation_support = kv_truncation_support_t::no;
         return false;
     }
+    this->kv_truncation_support = kv_truncation_support_t::yes;
 
     this->token_history.resize(keep_len);
     this->total_tokens = static_cast<uint32_t>(keep_len);
