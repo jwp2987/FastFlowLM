@@ -7,6 +7,7 @@
 #pragma once
 
 #include <ctime>
+#include <atomic>
 #include <iomanip>
 #include <sstream>
 #include <memory>
@@ -51,6 +52,17 @@ enum class StreamEventType {
 	REASONING,      
 	TOOL_DONE,
 };
+
+/// \brief Generate a unique id for a tool call.
+/// \note Clients correlate a tool result back to its call by this id, so two
+/// calls must never share one. std::time() alone has one-second resolution, so
+/// parallel tool calls in a single response collided; the counter makes each id
+/// unique regardless of how fast they are emitted.
+inline std::string generate_tool_call_id() {
+	static std::atomic<uint64_t> counter{0};
+	return "call_" + std::to_string(static_cast<uint64_t>(std::time(nullptr)))
+		+ "_" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
+}
 
 struct StreamResult {
 	StreamEventType type;

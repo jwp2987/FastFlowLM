@@ -650,7 +650,7 @@ StreamResult GPT_OSS::parse_stream_content(const std::string& content) {
 
                     // 3. Set Result
                     result.type = StreamEventType::TOOL_DONE;
-                    result.tool_id = "call_" + std::to_string(std::time(nullptr));
+                    result.tool_id = generate_tool_call_id();
                 }
                 else if (header_end != std::string::npos) {
                     // Commentary without a functions.* recipient: surface it as content.

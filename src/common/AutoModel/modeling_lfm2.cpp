@@ -243,7 +243,7 @@ StreamResult LFM2::parse_stream_content(const std::string& content) {
                 }
 
                 result.type = StreamEventType::TOOL_DONE;
-                result.tool_id = "call_" + std::to_string(std::time(nullptr));
+                result.tool_id = generate_tool_call_id();
                 result.tool_name = fn_name;
                 result.tool_args_str = args_json.dump();
 
@@ -635,7 +635,7 @@ StreamResult LFM2_5_TK::parse_stream_content(const std::string& content) {
                 }
 
                 result.type = StreamEventType::TOOL_DONE;
-                result.tool_id = "call_" + std::to_string(std::time(nullptr));
+                result.tool_id = generate_tool_call_id();
                 result.tool_name = fn_name;
                 result.tool_args_str = args_json.dump();
 

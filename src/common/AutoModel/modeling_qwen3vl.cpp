@@ -368,7 +368,7 @@ StreamResult Qwen3VL::parse_stream_content(const std::string& content) {
 
             result.type = StreamEventType::TOOL_DONE;
             //result.tool_id = generate_id();
-            result.tool_id = "call_" + std::to_string(std::time(nullptr));
+            result.tool_id = generate_tool_call_id();
 
             if (j.contains("name")) {
                 result.tool_name = j["name"].get<std::string>();

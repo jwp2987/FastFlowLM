@@ -626,7 +626,7 @@ StreamResult Qwen3_5VL::parse_stream_content_impl(const std::string& content, bo
 
                 try {
                     result.type = StreamEventType::TOOL_DONE;
-                    result.tool_id = "call_" + std::to_string(std::time(nullptr));
+                    result.tool_id = generate_tool_call_id();
 
                     // parse function name
                     std::string func_open = "<function=";
