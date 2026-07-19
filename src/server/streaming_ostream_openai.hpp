@@ -474,6 +474,40 @@ private:
         stream_callback("data: " + response.dump() + "\n\n", is_final);
     }
 
+public:
+    ///@brief Terminate a stream that failed before/while generating, as SSE.
+    ///@param message human-readable error
+    ///@param type OpenAI-style error type
+    ///@param code HTTP-ish status code
+    ///@note A client that opened an SSE stream cannot parse a bare JSON body;
+    /// sending one surfaces as "stream chunk error" rather than as the actual
+    /// error. Emit a data: frame carrying the error plus a terminating chunk
+    /// with finish_reason, then [DONE], so the client sees a well-formed stream
+    /// and can read why it stopped.
+    void send_error_response(const std::string& message, const std::string& type, int code) {
+        json error_response = {
+            {"id", stream_id},
+            {"object", "chat.completion.chunk"},
+            {"created", created},
+            {"model", model_name},
+            {"choices", json::array({
+                {
+                    {"index", 0},
+                    {"delta", json::object()},
+                    {"finish_reason", "error"}
+                }
+            })},
+            {"error", {
+                {"message", message},
+                {"type", type},
+                {"code", code}
+            }}
+        };
+        stream_callback("data: " + error_response.dump() + "\n\n", false);
+        stream_callback("data: [DONE]\n\n", true);
+    }
+
+private:
     ///@brief Send the chat final response
     void send_final_response(chat_meta_info_t& meta_info) {
         json final_response = {
@@ -545,6 +579,11 @@ public:
     ///@brief Finalize the chat
     void finalize(chat_meta_info_t& meta_info) {
         buf.finalize(meta_info);
+    }
+
+    ///@brief Terminate the stream with an error, in SSE form
+    void send_error(const std::string& message, const std::string& type, int code) {
+        buf.send_error_response(message, type, code);
     }
 
 private:

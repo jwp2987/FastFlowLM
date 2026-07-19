@@ -1215,21 +1215,23 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                         return;
                     }
 
-                    json error_response = {
-                        {"error", {
-                        {"message", "Max length reached!"},
-                        {"type", "model_error"},
-                        {"code", 400}
-                        }}
-                    };
-                    send_response(error_response);
+                    // The client is reading an SSE stream: a bare JSON body is
+                    // unparseable to it and surfaces as a generic stream error
+                    // rather than as this message. Report the real reason as a
+                    // properly terminated SSE stream instead.
+                    header_print("WARNING", "Prompt exceeds context window ("
+                        << auto_chat_engine->get_max_length() << " tokens); rejecting request.");
+                    ostream.send_error("Max length reached! The prompt exceeds the model's context window of "
+                        + std::to_string(auto_chat_engine->get_max_length())
+                        + " tokens. Shorten the conversation or reduce tool output; retrying "
+                          "the same request will fail identically.",
+                        "context_length_exceeded", 400);
                     this->auto_chat_engine->clear_context();
                     this->prompt_cache.reset();
                     return;
                 }
             } catch (const std::exception& e) {
-                json error_response = {{"error", e.what()}};
-                send_response(error_response);
+                ostream.send_error(e.what(), "model_error", 500);
                 this->auto_chat_engine->clear_context();
                 this->prompt_cache.reset();
                 return;
@@ -1238,8 +1240,7 @@ void RestHandler::handle_openai_chat_completion(const json& request,
             try {
                 auto_chat_engine->generate(meta_info, length_limit, ostream, [&] { return cancellation_token->cancelled(); });
             } catch (const std::exception& e) {
-                json error_response = {{"error", e.what()}};
-                send_response(error_response);
+                ostream.send_error(e.what(), "model_error", 500);
                 this->auto_chat_engine->clear_context();
                 this->prompt_cache.reset();
                 return;
