@@ -5,8 +5,12 @@
 > gpt_oss, lfm2, nanbeige, phi4) implement `set_context_length`. The
 > VL/multimodal engines (qwen2vl, qwen3vl, qwen3_5vl, gemma4e) and the MoE
 > engine (qwen3_6_moe) do **not** — they log "Setting context length is not
-> supported" and leave the cache unchanged. `AutoModel::truncate_context()`
-> detects this on first use and stops asking.
+> supported" and leave the cache unchanged. Some engines are worse than a clean
+> "not supported": gpt_oss *accepts* `set_context_length()`, reports the new
+> length, and then produces degenerate output, so the reported length is not a
+> correctness signal. `AutoModel` therefore probes truncation once at load time
+> by comparing logits (see [Load-time probe](#load-time-probe)), not by trusting
+> the return value on first use.
 
 `checkpoint()`, `restore()` and `set_context_length()` are declared in
 `causal_lm.hpp` but the engine implementing them ships as a prebuilt library
@@ -46,6 +50,34 @@ state as an uninterrupted prefill**, which is what partial prefix reuse needs.
   not be used — always clamp to the current length.
 - `set_context_length(0)` is accepted and reports 0.
 - Neither throws, so the caller is responsible for passing a sane value.
+
+## Load-time probe
+
+Because the return value cannot be trusted (see the gpt_oss note above),
+`AutoModel::probe_kv_truncation_once()` runs once, right after `load_model()`,
+on the quiescent engine — before any request is served. It prefills a fixed
+192-token sequence, truncates to 96, replays the tail, and compares the
+resulting logits against an uninterrupted prefill of the same sequence. The
+engine is trusted to reuse the shared prefix only if the argmax matches and the
+worst-element difference stays within 2% of the reference magnitude; otherwise
+truncation is disabled and divergent prompts are prefilled in full.
+
+The probe is run at load time, not on the first request that could use
+truncation, deliberately: the probe itself calls `set_context_length()`, and on
+an engine where that primitive is unsound the call can leave the NPU command
+queue in a state that faults a *later* operation (observed on gpt-oss as
+`qds_device::wait() unexpected command state` one request after an in-request
+probe). Running it on a quiescent engine keeps that cost and risk off the
+request path.
+
+### `FLM_SKIP_KV_PROBE`
+
+Set `FLM_SKIP_KV_PROBE=1` (any value; only presence is checked) to skip the
+probe entirely. The engine is then treated as not supporting truncation, so
+`set_context_length()` is never called and divergent prompts are always
+prefilled in full. It exists as a diagnostic escape hatch for bisecting
+NPU/engine faults without the probe touching the device; at startup you will
+see `KV truncation probe skipped (FLM_SKIP_KV_PROBE)` in the log.
 
 ## Consequence
 

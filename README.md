@@ -21,6 +21,52 @@ Run large language models — now with **Vision**, **Audio**, **Embedding** and 
 
 ---
 
+## 🧪 About this fork
+
+This is a personal fork — largely me playing around with the host-side runtime
+on a Ryzen™ AI NPU, not an official release. Everything here is on the C++ host
+layer; the prebuilt NPU kernels/firmware ship as binaries and are **untouched**.
+Nothing below has been upstreamed. In rough order of how much I poked at it:
+
+- **gpt-oss OpenAI tool/function calling, end-to-end.** `tools` were silently
+  ignored (plain-text replies, never a tool call). Fixed prompt injection of the
+  Harmony `functions` namespace, stopping generation on `<|call|>`, and parsing
+  the commentary tool channel for both streaming and non-streaming. Added
+  `tool_choice` support — `none`, forced-function, and `required` via constrained
+  decoding that forces the Harmony commentary channel — and gave every tool call
+  a unique id (several paths were emitting duplicates or the literal
+  `"generate_id()"`).
+- **Concurrency & memory safety.** Fixed glibc heap corruption under concurrent
+  `/v1/chat/completions` bursts (#608) by holding the NPU lock until the handler
+  fully returns instead of releasing it as a side effect of `send_response`.
+  Added a missing virtual destructor to `npu_cmd` (sized-delete UB / heap
+  corruption on load), serialized `header_print` so concurrent I/O threads stop
+  interleaving log lines, and removed the undocumented 333 ms inter-request
+  cooldown that was masking the #608 race (~35% faster on 5 concurrent requests).
+- **KV-cache prefix reuse.** Reuse a shared prompt prefix instead of clearing and
+  re-prefilling the whole context on every divergent request (55–82% fewer
+  prefill tokens on the workloads measured). Because `set_context_length()` is
+  unsound on some engines (gpt-oss accepts it and then returns garbage), support
+  is now measured once at load time by comparing logits; `FLM_SKIP_KV_PROBE=1`
+  skips it. Measured engine KV semantics are written up in
+  [`docs/kv_primitives.md`](docs/kv_primitives.md).
+- **Better error/diagnostic reporting.** Streaming failures are emitted as proper
+  SSE frames (`context_length_exceeded`, etc.) instead of an unparseable bare
+  JSON body mid-stream, and prompt-cache misses now report *why* they missed
+  (which round/message diverged) instead of a bare "cache miss".
+- **Host-side perf cleanups.** Actually enable the AVX2 sampler path (the
+  `USEAVX2` guard was never defined for the shipped binary), a bounded-heap top-k,
+  and a few tokenizer/whisper allocation fixes — all bit-identical, host-only, and
+  below the noise floor end-to-end since the NPU forward pass dominates.
+
+I also chased an NPU **firmware hang** on gpt-oss prefill (the control processor
+wedges at a fixed PC during a prefill GEMM and the driver TDR-timeouts it,
+surfacing as `qds_device::wait() unexpected command state`). It reproduces on
+stock upstream too and lives below the host layer in the binary firmware/xclbin,
+so it isn't fixable in this tree — it's documented, not patched.
+
+---
+
 ## 🔗 Quick Links
 
   🔽 **[Download](https://github.com/FastFlowLM/FastFlowLM/releases/latest/download/flm-setup.exe)** | 📊 **[Benchmarks](https://fastflowlm.com/docs/benchmarks/)** | 📦 **[Model List](https://fastflowlm.com/docs/models/)**  
@@ -57,6 +103,7 @@ flm run llama3.2:1b
 > - During installation on Windows, you can select a different base folder (e.g., if you choose `C:\Users\<USER>\flm`, models will be saved under `C:\Users\<USER>\flm\models\`).
 > - On Linux, you can override the default location by setting the `FLM_MODEL_PATH` environment variable.
 > - To disable the startup version check, set `FLM_DISABLE_UPDATE_CHECK=1`.
+> - To skip the load-time KV-truncation probe, set `FLM_SKIP_KV_PROBE=1`. The engine is then treated as not supporting truncation, so divergent prompts are prefilled in full and `set_context_length()` is never called. This is a diagnostic escape hatch for isolating NPU/engine faults; see [`docs/kv_primitives.md`](docs/kv_primitives.md).
 > - ⚠️ If HuggingFace is not accessible in your region, manually download the model ([check this issue](https://github.com/FastFlowLM/FastFlowLM/issues/2)) and place it in the chosen directory.   
 
 🎉🚀 FastFlowLM (FLM) is ready — your NPU is unlocked and you can start chatting with models right away!
