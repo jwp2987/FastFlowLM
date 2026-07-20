@@ -65,6 +65,8 @@ Runner::Runner(model_list& supported_models, ModelDownloader& downloader, progra
     this->auto_chat_engine->configure_parameter("img_pre_resize", this->img_pre_resize);
     try {
         this->auto_chat_engine->load_model(this->supported_models.get_model_path(new_tag), model_info, this->ctx_length, this->preemption);
+        // Measure KV truncation on the quiescent engine, before any request.
+        this->auto_chat_engine->probe_kv_truncation_once();
     }
     catch (const std::exception& e) {
         header_print("ERROR", "Failed to load model: " + std::string(e.what()));
@@ -426,6 +428,8 @@ void Runner::cmd_load(std::vector<std::string>& input_list) {
         this->auto_chat_engine->configure_parameter("img_pre_resize", this->img_pre_resize);
         try {
             this->auto_chat_engine->load_model(this->supported_models.get_model_path(new_tag), model_info, this->ctx_length, this->preemption);
+            // Measure KV truncation on the quiescent engine, before any request.
+            this->auto_chat_engine->probe_kv_truncation_once();
         }
         catch (const std::exception& e) {
             header_print("ERROR", "Failed to load model: " + std::string(e.what()));

@@ -496,14 +496,125 @@ StreamResult AutoModel::_shared_think_tool_calling_pasrsed(const std::string& co
 /// against tokens the cache no longer holds. checkpoint_his is invalidated
 /// rather than truncated: a checkpoint taken before this call describes a cache
 /// state that no longer exists.
+void AutoModel::probe_kv_truncation_once() {
+    if (this->kv_truncation_support != kv_truncation_support_t::unknown) {
+        return;
+    }
+    // Deliberately run at load time, not on the first request that could use
+    // truncation. The probe has to invoke set_context_length() to measure it, and
+    // on an engine where that primitive is unsound the call can leave the NPU
+    // command queue in a state that faults a later operation (observed on
+    // gpt-oss: "qds_device::wait() unexpected command state" one request after an
+    // in-request probe). Doing it here keeps that cost off the request path.
+    // Escape hatch for bisecting engine faults: skip the probe entirely and
+    // assume truncation is unavailable, so set_context_length() is never called.
+    if (std::getenv("FLM_SKIP_KV_PROBE") != nullptr) {
+        this->kv_truncation_support = kv_truncation_support_t::no;
+        header_print("FLM", "KV truncation probe skipped (FLM_SKIP_KV_PROBE); "
+            "prompts that diverge from the cache will be prefilled in full.");
+        return;
+    }
+    const bool ok = this->probe_kv_truncation();
+    this->kv_truncation_support = ok ? kv_truncation_support_t::yes
+                                     : kv_truncation_support_t::no;
+    if (ok) {
+        header_print("FLM", "KV truncation verified; divergent prompts will "
+            "reuse the shared prefix.");
+    }
+    else {
+        header_print("FLM", "KV truncation is unreliable on this engine; "
+            "prompts that diverge from the cache will be prefilled in full.");
+    }
+}
+
+bool AutoModel::probe_kv_truncation() {
+    if (this->lm_engine == nullptr || this->lm_config == nullptr) {
+        return false;
+    }
+    // Long enough to cross gpt-oss's 128-token window at the truncation point,
+    // short enough that three prefills stay cheap even on a 20B model.
+    const int probe_len = 192;
+    const int keep_len = 96;
+    const int vocab = static_cast<int>(this->lm_config->vocab_size);
+    if (vocab <= 0 || probe_len >= static_cast<int>(this->MAX_L)) {
+        return false;
+    }
+    // Ordinary ids well clear of the low special-token range, and of the high end
+    // where some vocabularies keep reserved slots.
+    std::vector<int> seq(probe_len);
+    const int base = std::max(1, std::min(1000, vocab / 4));
+    for (int i = 0; i < probe_len; i++) {
+        seq[i] = base + (i % std::max(1, vocab - base - 1));
+    }
+
+    auto snapshot = [vocab](buffer<bf16>& b) {
+        std::vector<float> v(static_cast<size_t>(vocab));
+        for (size_t i = 0; i < v.size(); i++) {
+            v[i] = b[i];
+        }
+        return v;
+    };
+
+    std::vector<float> reference, reconstructed;
+    try {
+        // Reference: one uninterrupted prefill.
+        this->lm_engine->clear_context();
+        std::vector<int> full = seq;
+        buffer<bf16> y_ref = this->lm_engine->prefill(full);
+        reference = snapshot(y_ref);
+
+        // Candidate: same prefill, truncated, then the tail replayed.
+        this->lm_engine->clear_context();
+        std::vector<int> full2 = seq;
+        this->lm_engine->prefill(full2);
+        this->lm_engine->set_context_length(keep_len);
+        if (this->lm_engine->get_current_context_length() != keep_len) {
+            // Engine declined outright (VL/MoE); it left the cache alone.
+            this->lm_engine->clear_context();
+            return false;
+        }
+        std::vector<int> tail(seq.begin() + keep_len, seq.end());
+        buffer<bf16> y_test = this->lm_engine->prefill(tail);
+        reconstructed = snapshot(y_test);
+        this->lm_engine->clear_context();
+    }
+    catch (const std::exception& e) {
+        header_print("WARNING", "KV truncation probe failed: " << e.what());
+        try { this->lm_engine->clear_context(); } catch (...) {}
+        return false;
+    }
+
+    if (reference.size() != reconstructed.size() || reference.empty()) {
+        return false;
+    }
+    // A correctly reconstructed cache reproduces the reference logits; a corrupt
+    // one diverges grossly, so the threshold only has to separate "same" from
+    // "nonsense". Compare the argmax and the worst element, scaled to the
+    // reference magnitude to stay independent of the model's logit range.
+    size_t ref_arg = 0, test_arg = 0;
+    float ref_max = reference[0], test_max = reconstructed[0], worst = 0.0f, scale = 0.0f;
+    for (size_t i = 0; i < reference.size(); i++) {
+        if (reference[i] > ref_max)      { ref_max = reference[i];      ref_arg = i; }
+        if (reconstructed[i] > test_max) { test_max = reconstructed[i]; test_arg = i; }
+        worst = std::max(worst, std::fabs(reference[i] - reconstructed[i]));
+        scale = std::max(scale, std::fabs(reference[i]));
+    }
+    if (ref_arg != test_arg) {
+        return false;
+    }
+    return worst <= 0.02f * std::max(scale, 1.0f);
+}
+
 bool AutoModel::truncate_context(size_t keep_len) {
     if (this->lm_engine == nullptr) {
         return false;
     }
-    // The VL/multimodal and MoE engines do not implement set_context_length; they
-    // log "not supported" and leave the cache alone. Asking once is how we find
-    // out, but asking every request would spam the log and waste the call.
     if (this->kv_truncation_support == kv_truncation_support_t::no) {
+        return false;
+    }
+    // probe_kv_truncation_once() runs at load time and decides this. If it never
+    // ran, stay conservative rather than trusting an unmeasured engine.
+    if (this->kv_truncation_support == kv_truncation_support_t::unknown) {
         return false;
     }
     const size_t current = this->token_history.size();

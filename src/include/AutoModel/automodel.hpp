@@ -240,9 +240,24 @@ public:
 	/// \param keep_len number of leading tokens to retain
 	/// \return true on success; on false the caller must clear_context()
 	/// \note Not every engine implements truncation (the VL/multimodal and MoE
-	/// engines do not). Support is detected on first use and remembered, so an
-	/// engine that cannot truncate is asked exactly once.
+	/// engines do not), and some accept it but leave the cache inconsistent.
+	/// Support is measured on first use and remembered, so an engine is probed
+	/// exactly once per load.
 	bool truncate_context(size_t keep_len);
+
+	/// \brief Measure KV truncation support once, at load time
+	/// \note Must be called after load_model() and before serving. Runs on a
+	/// quiescent engine because the probe itself exercises set_context_length(),
+	/// which can fault a following operation on engines where it is unsound.
+	void probe_kv_truncation_once();
+
+	/// \brief Measure whether truncate-then-reprefill reconstructs the same state
+	/// \return true if the engine's set_context_length() is safe to rely on
+	/// \note Destroys the KV cache; only call when the context is disposable.
+	/// The reported context length is not a correctness signal -- gpt-oss
+	/// accepts the call, reports the new length, and still returns degenerate
+	/// output afterwards -- so this compares logits instead.
+	bool probe_kv_truncation();
 
 	/// \brief Get the current model
 	/// \return the current model

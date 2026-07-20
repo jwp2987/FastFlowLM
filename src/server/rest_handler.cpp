@@ -399,6 +399,8 @@ bool RestHandler::ensure_model_loaded(const std::string& model_tag) {
         auto_chat_engine->configure_parameter("img_pre_resize", this->img_pre_resize);
         try {
             auto_chat_engine->load_model(supported_models.get_model_path(new_ensure_tag), model_info, ctx_length, preemption);
+            // Measure KV truncation on the quiescent engine, before any request.
+            auto_chat_engine->probe_kv_truncation_once();
         }
         catch (const std::exception& e) {
             header_print("ERROR", "Failed to load model: " + std::string(e.what()));
