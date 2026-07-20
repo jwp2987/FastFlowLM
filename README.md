@@ -41,11 +41,11 @@ Nothing below has been upstreamed. In rough order of how much I poked at it:
   fully returns instead of releasing it as a side effect of `send_response`.
   Added a missing virtual destructor to `npu_cmd` (sized-delete UB / heap
   corruption on load), serialized `header_print` so concurrent I/O threads stop
-  interleaving log lines, and removed the undocumented 333 ms inter-request
-  cooldown that was masking the #608 race (~35% faster on 5 concurrent requests).
+  interleaving log lines, and removed an undocumented inter-request cooldown that
+  was masking the #608 race (noticeably faster under concurrent load).
 - **KV-cache prefix reuse.** Reuse a shared prompt prefix instead of clearing and
-  re-prefilling the whole context on every divergent request (55–82% fewer
-  prefill tokens on the workloads measured). Because `set_context_length()` is
+  re-prefilling the whole context on every divergent request (fewer prefill
+  tokens on repetitive workloads). Because `set_context_length()` is
   unsound on some engines (gpt-oss accepts it and then returns garbage), support
   is now measured once at load time by comparing logits; `FLM_SKIP_KV_PROBE=1`
   skips it. Measured engine KV semantics are written up in
