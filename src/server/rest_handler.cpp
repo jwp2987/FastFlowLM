@@ -1182,6 +1182,13 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                         std::to_string(cache_info.cached_rounds) + " cached rounds, request has " +
                         std::to_string(cache_info.total_rounds) + " rounds, tools " +
                         (cache_info.tools_matched ? "matched" : "changed") + ".");
+                    if (!cache_info.divergent_role.empty()) {
+                        header_print("FLM", "  first divergence at message ["
+                            << cache_info.matched_rounds << "] role=" << cache_info.divergent_role
+                            << " len=" << cache_info.divergent_len);
+                        header_print("FLM", "    head: " << cache_info.divergent_head);
+                        header_print("FLM", "    tail: " << cache_info.divergent_tail);
+                    }
                 }
                 header_print("FLM", "Reusing any shared prefix; prefilling the remainder.");
             }
