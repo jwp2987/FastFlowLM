@@ -20,6 +20,14 @@ struct cache_match_info_t {
     size_t cached_rounds = 0;    // number of rounds currently held in the cache
     size_t total_rounds = 0;     // number of rounds in the incoming request
     bool tools_matched = false;  // whether the tool definitions matched
+
+    // Diagnostics for the first message that failed to match. A prefix cache is
+    // useless if any earlier message is rewritten between turns, so when a match
+    // fails it matters *which* message changed and what it now looks like.
+    std::string divergent_role;      // role of the first non-matching message
+    size_t divergent_len = 0;        // its content length in the new request
+    std::string divergent_head;      // leading characters of its content
+    std::string divergent_tail;      // trailing characters of its content
 };
 
 class PromptCache {
@@ -166,6 +174,31 @@ public:
             ++matched;
         }
         info.matched_rounds = matched;
+
+        // Capture what the first divergent message looks like now. Its head shows
+        // whether the message identity changed; its tail shows whether only a
+        // trailing block (e.g. an env/context footer) was regenerated.
+        if (matched < messages.size()) {
+            const auto& bad = messages[matched];
+            info.divergent_role = bad.value("role", "?");
+            std::string content;
+            if (bad.contains("content") && bad["content"].is_string()) {
+                content = bad["content"].get<std::string>();
+            }
+            else if (bad.contains("content")) {
+                content = bad["content"].dump();
+            }
+            info.divergent_len = content.size();
+            const size_t edge = 70;
+            info.divergent_head = content.substr(0, std::min(edge, content.size()));
+            info.divergent_tail = content.size() > edge
+                ? content.substr(content.size() - edge)
+                : std::string();
+            // Keep the log on one line.
+            for (std::string* s : {&info.divergent_head, &info.divergent_tail}) {
+                for (char& c : *s) { if (c == '\n' || c == '\r' || c == '\t') c = ' '; }
+            }
+        }
 
         // Cache is reusable when every previously seen message still appears
         // (in order) at the start of the new conversation, allowing rounds
