@@ -203,18 +203,39 @@ bool AutoModel::_shared_insert(chat_meta_info_t& meta_info, std::vector<int>& to
             skip_count = 0;
         }
     }
-    // skip_count == idx: the cache is exactly the prefix already, nothing to do.
+    else {
+        // skip_count == idx: the host mirror says the cache already equals the
+        // reusable prefix. Don't trust that blindly -- the engine's internal
+        // context length can drift ahead of the mirror (e.g. GPT_OSS forwards one
+        // extra EOS token after generation, advancing the engine's KV without
+        // updating token_history / total_tokens). Left unchecked, the suffix below
+        // would be prefilled one position past where the mirror thinks the cache
+        // ends. If the engine has drifted, realign it to the mirror; if it can't
+        // be realigned, fall back to a full reset.
+        if (this->lm_engine != nullptr &&
+            this->lm_engine->get_current_context_length() != static_cast<int>(skip_count)) {
+            if (!truncate_context(skip_count)) {
+                clear_context();
+                skip_count = 0;
+            }
+        }
+    }
 
     tokens.erase(tokens.begin(), tokens.begin() + skip_count);
 
     if (tokens.empty()) {
+        // An empty prompt (nothing left to prefill) is a malformed request, not a
+        // context-length problem. Flag it distinctly so the caller reports it
+        // correctly instead of as context_length_exceeded.
         header_print("WARNING", "No tokens to prefill");
+        meta_info.stop_reason = ERROR_DETECTED;
         return false;
     }
 
 
     if (this->total_tokens + tokens.size() >= this->MAX_L){
         header_print("WARNING", "Max length reached, stopping prefilling...");
+        meta_info.stop_reason = MAX_LENGTH_REACHED;
         return false;
     }
     for (int token : tokens){
@@ -621,9 +642,9 @@ bool AutoModel::truncate_context(size_t keep_len) {
     if (keep_len > current) {
         return false; // growth is meaningless; the engine never wrote those positions
     }
-    if (keep_len == current) {
-        return true;
-    }
+    // keep_len == current is NOT a no-op: the engine's internal context length can
+    // drift ahead of the host mirror, so we still issue the truncation below to
+    // force the engine's KV write position back to keep_len.
 
     try {
         this->lm_engine->set_context_length(static_cast<int>(keep_len));
@@ -636,10 +657,11 @@ bool AutoModel::truncate_context(size_t keep_len) {
 
     const int engine_len = this->lm_engine->get_current_context_length();
     if (engine_len != static_cast<int>(keep_len)) {
-        if (this->kv_truncation_support == kv_truncation_support_t::unknown) {
-            header_print("FLM", "This engine does not support KV truncation; "
-                "prompts that diverge from the cache will be prefilled in full.");
-        }
+        // Support was probed as 'yes' (the no/unknown cases return above), but the
+        // engine did not honor this request. Downgrade so we stop trusting it and
+        // prefill in full from here on.
+        header_print("FLM", "This engine does not support KV truncation; "
+            "prompts that diverge from the cache will be prefilled in full.");
         this->kv_truncation_support = kv_truncation_support_t::no;
         return false;
     }

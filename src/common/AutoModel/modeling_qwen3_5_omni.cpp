@@ -750,7 +750,7 @@ std::pair<std::string, std::vector<int>> Qwen3_5_Omni::get_history() {
 }
 
 // Non-stream
-NonStreamResult Qwen3_5_Omni::parse_nstream_content(const std::string response_text) {
+NonStreamResult Qwen3_5_Omni::parse_nstream_content(const std::string& response_text) {
     NonStreamResult result;
 
     std::string start_tag = "<tool_call>";
@@ -872,11 +872,11 @@ NonStreamResult Qwen3_5_Omni::parse_nstream_content(const std::string response_t
 }
 
 // Stream
-StreamResult Qwen3_5_Omni::parse_stream_content(const std::string content) {
+StreamResult Qwen3_5_Omni::parse_stream_content(const std::string& content) {
     return parse_stream_content_impl(content, false);
 }
 
-StreamResult Qwen3_5_Omni::parse_stream_content_final(const std::string content) {
+StreamResult Qwen3_5_Omni::parse_stream_content_final(const std::string& content) {
     return parse_stream_content_impl(content, true);
 }
 

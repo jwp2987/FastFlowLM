@@ -215,18 +215,34 @@ void Sampler::sampler_penalty_apply_sparse() {
 }
 
 void Sampler::sampler_topk_apply(int k) {
-    // k <= 0 means "no top-k filtering". Returning early instead would leave
-    // top_k_logits holding the previous token's candidates, and the caller would
-    // then sample from stale data (or from an empty vector on the first token).
-    if (k <= 0 || k > in_features) {
-        k = in_features;
-    }
-
     // Ordering by descending logit doubles as the min-heap predicate: make_heap
     // with a greater-than comparator puts the *weakest* candidate at the root.
     auto by_logit_desc = [](const logits_t& a, const logits_t& b) {
         return a.logits > b.logits;
     };
+
+    // k <= 0 means "no top-k filtering". The candidate set is the whole
+    // vocabulary, so the heap-based selection below would select everything --
+    // pure overhead. Mirror the logits into top_k_logits directly (never early
+    // return: that would leave stale candidates from the previous token). The
+    // O(V log V) sort is only needed when a downstream stage consumes descending
+    // order: top_p / min_p filtering, or greedy (temp == 0), which keeps
+    // top_k_logits[0] as the argmax. Plain temperature sampling does not, so skip
+    // the sort then.
+    if (k <= 0 || k >= in_features) {
+        this->top_k_logits.resize(in_features);
+        for (int i = 0; i < in_features; i++) {
+            this->top_k_logits[i] = {this->logits[i], i, 0.0f};
+        }
+        const bool needs_sorted_order =
+            this->top_p < 1.0f ||
+            (this->min_p > 0.0f && this->min_p <= 1.0f) ||
+            this->temperature == 0.0f;
+        if (needs_sorted_order) {
+            std::sort(this->top_k_logits.begin(), this->top_k_logits.end(), by_logit_desc);
+        }
+        return;
+    }
 
     // Keep only k candidates rather than materializing a vocabulary-sized array
     // of pairs per token; the bulk of the vocabulary is then rejected by a

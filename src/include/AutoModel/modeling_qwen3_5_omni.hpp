@@ -46,9 +46,9 @@ public:
     /// \brief insert() followed by generate().
     std::string generate_with_prompt(chat_meta_info_t& meta_info, lm_uniform_input_t& input, int length_limit, std::ostream& os = std::cout) override;
 
-    NonStreamResult parse_nstream_content(const std::string response_text);
-    StreamResult parse_stream_content(const std::string content);
-    StreamResult parse_stream_content_final(const std::string content) override;
+    NonStreamResult parse_nstream_content(const std::string& response_text) override;
+    StreamResult parse_stream_content(const std::string& content) override;
+    StreamResult parse_stream_content_final(const std::string& content) override;
 
     /// \brief Synthesize speech from the last thinker result (talker path).
     /// \note Talker/codec/WAV-writer are not implemented in the engine yet; this

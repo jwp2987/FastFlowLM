@@ -273,6 +273,10 @@ file(GLOB HEADERS "include/*.hpp" "runner/*.hpp" "common/*.hpp" "common/*/*.hpp"
 
 # Exclude files that depend on missing libraries for Linux
 if(NOT WIN32)
+    # Qwen3.5-Omni ships only a Windows import library (qwen3_5_omni_npu.lib); there
+    # is no Linux .so, so exclude its sources (and the link entry below is guarded to
+    # WIN32 too). The model is registered Windows-only in all_models.hpp.
+    list(FILTER SOURCES EXCLUDE REGEX ".*modeling_qwen3_5_omni.*\\.cpp$")
     # list(FILTER SOURCES EXCLUDE REGEX ".*modeling_gemma3\\.cpp$")
     # list(FILTER SOURCES EXCLUDE REGEX ".*modeling_gemma3_image\\.cpp$")
     # list(FILTER SOURCES EXCLUDE REGEX ".*modeling_gemma3_text\\.cpp$")
@@ -428,7 +432,6 @@ target_link_libraries(flm PUBLIC
     qwen3_npu
     qwen3vl_npu
     qwen3_5vl_npu
-    qwen3_5_omni_npu
     qwen3_6_moe_npu
     gemma_npu
     gemma_text_npu
@@ -448,6 +451,8 @@ target_link_libraries(flm PUBLIC
 if(WIN32)
     target_link_libraries(flm PUBLIC
         aiebu_static
+        # Qwen3.5-Omni is Windows-only: no Linux .so is shipped for it.
+        qwen3_5_omni_npu
     )
 else()
     target_link_libraries(flm PUBLIC

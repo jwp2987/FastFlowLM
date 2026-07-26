@@ -40,6 +40,8 @@ public:
     bool insert(chat_meta_info_t& meta_info, lm_uniform_input_t& input, std::function<bool()> is_cancelled = [] { return false; }) override;
     std::string generate(chat_meta_info_t& meta_info, int length_limit, std::ostream& os, std::function<bool()> is_cancelled = [] { return false; }) override;
     std::string generate_with_prompt(chat_meta_info_t& meta_info, lm_uniform_input_t& input, int length_limit, std::ostream& os = std::cout) override;
+    // generate() constrains Harmony decoding to honor force_tool_call.
+    bool supports_forced_tool_call() const override { return true; }
     int _sample_in_tool(buffer<bf16>& logits);
     std::vector<int> get_to_functions_tokens();
     std::vector<int> get_function_name_tokens();

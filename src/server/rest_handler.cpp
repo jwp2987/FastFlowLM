@@ -1130,6 +1130,23 @@ void RestHandler::handle_openai_chat_completion(const json& request,
         }
         auto load_end_time = time_utils::now();
 
+        // tool_choice: required / forced-function is a hard guarantee. Only engines
+        // that actually constrain decoding to emit a tool call can honor it; for any
+        // other loaded model, reject the request rather than silently returning plain
+        // text and violating the contract.
+        if (force_tool_call && !auto_chat_engine->supports_forced_tool_call()) {
+            json error_response = {
+                {"error", {
+                    {"message", "tool_choice 'required'/forced-function is not supported by model '"
+                        + model + "'. Use tool_choice 'auto', or a model that supports forced tool calls."},
+                    {"type", "invalid_request_error"},
+                    {"code", 400}
+                }}
+            };
+            send_response(error_response);
+            return;
+        }
+
         configure_chat_engine_parameters(options, request);
 
         current_messages = normalize_messages(current_messages);
@@ -1230,17 +1247,30 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                         return;
                     }
 
-                    // The client is reading an SSE stream: a bare JSON body is
-                    // unparseable to it and surfaces as a generic stream error
-                    // rather than as this message. Report the real reason as a
-                    // properly terminated SSE stream instead.
-                    header_print("WARNING", "Prompt exceeds context window ("
-                        << auto_chat_engine->get_max_length() << " tokens); rejecting request.");
-                    ostream.send_error("Max length reached! The prompt exceeds the model's context window of "
-                        + std::to_string(auto_chat_engine->get_max_length())
-                        + " tokens. Shorten the conversation or reduce tool output; retrying "
-                          "the same request will fail identically.",
-                        "context_length_exceeded", 400);
+                    if (meta_info.stop_reason == MAX_LENGTH_REACHED) {
+                        // A genuine context-window overflow. The client is reading an
+                        // SSE stream: a bare JSON body is unparseable to it and surfaces
+                        // as a generic stream error rather than as this message, so
+                        // report the real reason as a properly terminated SSE stream.
+                        header_print("WARNING", "Prompt exceeds context window ("
+                            << auto_chat_engine->get_max_length() << " tokens); rejecting request.");
+                        ostream.send_error("Max length reached! The prompt exceeds the model's context window of "
+                            + std::to_string(auto_chat_engine->get_max_length())
+                            + " tokens. Shorten the conversation or reduce tool output; retrying "
+                              "the same request will fail identically.",
+                            "context_length_exceeded", 400);
+                        this->auto_chat_engine->clear_context();
+                        this->prompt_cache.reset();
+                        return;
+                    }
+
+                    // Any other non-cancel prefill failure means there were no tokens to
+                    // process (empty messages, or a prompt that reduces to nothing) -- a
+                    // malformed request, not a context-length problem.
+                    header_print("WARNING", "Empty or malformed prompt; nothing to prefill.");
+                    ostream.send_error("The request produced no tokens to process "
+                        "(empty or malformed prompt). Provide a non-empty message.",
+                        "invalid_request_error", 400);
                     this->auto_chat_engine->clear_context();
                     this->prompt_cache.reset();
                     return;
@@ -1283,10 +1313,25 @@ void RestHandler::handle_openai_chat_completion(const json& request,
                         this->prompt_cache.reset();
                         return;
                     }
+                    if (meta_info.stop_reason == MAX_LENGTH_REACHED) {
+                        // A genuine context-window overflow.
+                        json error_response = {
+                            {"error", {
+                            {"message", "Max length reached!"},
+                            {"type", "model_error"},
+                            {"code", 400}
+                            }}
+                        };
+                        send_response(error_response);
+                        this->auto_chat_engine->clear_context();
+                        this->prompt_cache.reset();
+                        return;
+                    }
+                    // Any other non-cancel prefill failure: empty / malformed prompt.
                     json error_response = {
                         {"error", {
-                        {"message", "Max length reached!"},
-                        {"type", "model_error"},
+                        {"message", "The request produced no tokens to process (empty or malformed prompt)."},
+                        {"type", "invalid_request_error"},
                         {"code", 400}
                         }}
                     };

@@ -396,6 +396,13 @@ public:
 	virtual chat_template_type_t get_chat_template_type() {
 		return chat_template_type_t::chat_ml;
 	}
+	/// \brief Whether this engine honors meta_info.force_tool_call (tool_choice:
+	/// required / forced-function). Only engines that actually constrain decoding
+	/// to emit a tool call may return true; the default is false so callers can
+	/// reject the request instead of silently ignoring the forcing directive.
+	virtual bool supports_forced_tool_call() const {
+		return false;
+	}
 	/// \brief Insert the tokens
 	/// \param tokens the tokens
 	/// \param is_system_prompt the is system prompt

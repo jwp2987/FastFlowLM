@@ -179,14 +179,16 @@ std::string GPT_OSS::generate(chat_meta_info_t& meta_info, int length_limit, std
         last_sampled_token = sampled_token;
 
         this->profiler_list[TKOEN_DECODE_TIME].start();
-        bool is_tool_call_end = false;
-        if (this->is_normal_token(sampled_token)){ // filter out special tokens
-            std::string token_str = this->tokenizer->run_time_decoder(sampled_token);
+        // A Harmony tool call terminates with <|call|>, which is NOT an eos token
+        // and may be classified as a special (non-"normal") token. Decode every
+        // token for the stop check so detection does not depend on is_normal_token;
+        // if we skipped special tokens here the model would fabricate a tool result
+        // and keep generating past the call.
+        std::string token_str = this->tokenizer->run_time_decoder(sampled_token);
+        bool is_tool_call_end = (token_str == "<|call|>");
+        if (this->is_normal_token(sampled_token)){ // only stream normal tokens to the client
             os << token_str << std::flush;
             result += token_str;
-            // A Harmony tool call terminates with <|call|>, which is NOT an eos token.
-            // Stop here, otherwise the model fabricates a tool result and keeps going.
-            is_tool_call_end = (token_str == "<|call|>");
         }
         this->profiler_list[TKOEN_DECODE_TIME].stop(1);
         token_history.push_back(sampled_token);
