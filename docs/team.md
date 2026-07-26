@@ -17,7 +17,7 @@ sections:
         href: "mailto:info@fastflowlm.com"
         style: primary
       - label: "Join Discord"
-        href: "https://discord.gg/z24t23HsHF?utm_source=site"
+        href: "https://discord.com/invite/jtWZdMJ8ee?utm_source=site"
         style: ghost
         external: true
     right:

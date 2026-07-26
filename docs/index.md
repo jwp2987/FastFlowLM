@@ -11,7 +11,7 @@ sections:
     body: |
       FastFlowLM (FLM) delivers an Ollama-style developer experience built exclusively for AMD Ryzen™ AI NPUs. Install in seconds, stream tokens instantly, and run context windows up to 256k — all with dramatically better efficiency than GPU-first stacks.
       
-      FastFlowLM is now part of AMD.
+      The FastFlowLM team is now part of AMD.
     ctas:
       - label: "Download FastFlowLM (Windows)"
         href: "https://github.com/FastFlowLM/FastFlowLM/releases/latest/download/flm-setup.exe"
@@ -31,7 +31,7 @@ sections:
       #   href: "/demos/"
       #   style: ghost
       - label: "Discord"
-        href: "https://discord.gg/z24t23HsHF?utm_source=site"
+        href: "https://discord.com/invite/jtWZdMJ8ee?utm_source=site"
         style: ghost
         external: true
     stats:
@@ -236,6 +236,8 @@ sections:
       title: "Dive into the docs"
       body: |
         Everything you need to install FastFlowLM, pick a model, and start streaming on your Ryzen™ AI NPU.
+
+        For inquiries: [Discord](https://discord.com/invite/jtWZdMJ8ee?utm_source=site)
     right:
       ctas:
         - label: "Dive into docs"

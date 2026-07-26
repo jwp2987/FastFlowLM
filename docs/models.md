@@ -54,7 +54,7 @@ sections:
           style: primary
           external: true
         - label: "Discord"
-          href: "https://discord.gg/z24t23HsHF?utm_source=site"
+          href: "https://discord.com/invite/jtWZdMJ8ee?utm_source=site"
           style: ghost
           external: true
 ---

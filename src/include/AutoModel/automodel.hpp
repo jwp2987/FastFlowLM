@@ -234,7 +234,7 @@ public:
 	}
 
 	/// \brief Clear the context
-	void clear_context();
+	virtual void clear_context();
 
 	/// \brief Drop KV cache entries past the first keep_len tokens
 	/// \param keep_len number of leading tokens to retain
@@ -265,15 +265,15 @@ public:
 
 	/// \brief Get the current context length
 	/// \return the current context length
-	int get_current_context_length();
+	virtual int get_current_context_length();
 
 	/// \brief Set the sampler
 	/// \param sampler_config the sampler config
-	void set_sampler(sampler_config& sampler_config);
+	virtual void set_sampler(sampler_config& sampler_config);
 
 	/// \brief Set the max length
-	/// \param MAX_L the max length 
-	void set_max_length(unsigned int MAX_L);
+	/// \param MAX_L the max length
+	virtual void set_max_length(unsigned int MAX_L);
 
 	/// \brief Get the max length
 	/// \return the max length
@@ -281,15 +281,15 @@ public:
 
 	/// \brief Show the model info
 	/// \return the model info
-	std::string show_model_info();
+	virtual std::string show_model_info();
 
 	/// \brief Show the profile
 	/// \return the profile
-	std::string show_profile();
+	virtual std::string show_profile();
 
 	/// \brief Get the history
 	/// \return the history
-	std::pair<std::string, std::vector<int>> get_history();
+	virtual std::pair<std::string, std::vector<int>> get_history();
 
 	/// \brief Verbose
 	void verbose();
