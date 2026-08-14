@@ -14,11 +14,11 @@ sections:
       The FastFlowLM team is now part of AMD.
     ctas:
       - label: "Download FastFlowLM (Windows)"
-        href: "https://github.com/FastFlowLM/FastFlowLM/releases/latest/download/flm-setup.exe"
+        href: "https://github.com/ROCm/FastFlowLM/releases/latest/download/flm-setup.msi"
         style: primary
         external: true
       - label: "GitHub"
-        href: "https://github.com/FastFlowLM/FastFlowLM"
+        href: "https://github.com/ROCm/FastFlowLM"
         style: ghost
         external: true
       - label: "Models"
@@ -96,7 +96,7 @@ sections:
       href: "https://youtu.be/TT7WZOeqxQY?si=DUpdyw_xNBYfEZNz"
       kicker: "Qwen3.6-MoE on NPU"
       body: |
-        The fastest Qwen3.6-35B-A3B MoE implementation on any NPU—built for both Windows and Linux (Linux in this deomo).
+        The fastest Qwen3.6-35B-A3B MoE implementation on any NPU—built for both Windows and Linux (Linux in this demo).
 
   - type: media
     variant: alt
@@ -166,9 +166,9 @@ sections:
       code_blocks:
         - title: "CLI"
           content: |
-            Invoke-WebRequest https://github.com/FastFlowLM/FastFlowLM/releases/latest/download/flm-setup.exe `
-              -OutFile flm-setup.exe
-            Start-Process .\flm-setup.exe -Wait
+            Invoke-WebRequest https://github.com/ROCm/FastFlowLM/releases/latest/download/flm-setup.msi `
+              -OutFile flm-setup.msi
+            Start-Process .\flm-setup.msi -Wait
             flm pull llama3.2:3b
             flm run llama3.2:3b --ctx-len 131072
             

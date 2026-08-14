@@ -470,7 +470,7 @@ Example:
 * **No quotes** around the prompt
 * File must be plain text (readable in Notepad)
 
-👉 [Download a sample prompt (around 40k tokens)](https://github.com/FastFlowLM/FastFlowLM/blob/main/assets/alice_in_wonderland.txt)  
+👉 [Download a sample prompt (around 40k tokens)](https://github.com/ROCm/FastFlowLM/blob/main/assets/alice_in_wonderland.txt)  
 
 > ⚠️ **Caution:** a model’s supported context length is limited by available DRAM capacity. For example, with **32 GB** of DRAM, **LLaMA 3.1:8B** cannot run beyond a **32K** context length. For the full **128K** context, we recommend larger memory system.
 
@@ -542,10 +542,16 @@ Example:
 
 Use the FLM benchmarking tool to measure a model's performance across different context lengths.
 
-Each benchmark tests context lengths from `1k` to `32k`, running `8` iterations at each length.
+Each benchmark tests context lengths from `1k` to `32k`, running `2` iterations at each length.
 
 ```shell
 flm bench llama3.2:1b
+```
+
+Change the iteration times by `bench-iteratons`:
+
+```shell
+flm bench llama3.2:1b --bench-iteratons 4
 ```
 
 FLM prints the results in your terminal and also saves them as a CSV file in the current folder for later reference.

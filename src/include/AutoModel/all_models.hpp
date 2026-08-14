@@ -18,12 +18,7 @@
 #include "modeling_qwen2vl.hpp"
 #include "modeling_qwen3vl.hpp"
 #include "modeling_qwen3_5vl.hpp"
-#ifdef _WIN32
-// Qwen3.5-Omni ships only a Windows import library (qwen3_5_omni_npu.lib); there is
-// no Linux .so, so the model is Windows-only until upstream provides one. On Linux a
-// "qwen3.5-omni" request falls through to the default handler below.
 #include "modeling_qwen3_5_omni.hpp"
-#endif
 #include "modeling_qwen3_6_moe.hpp"
 #include "modeling_nanbeige.hpp"
 #include "modeling_gemma4e.hpp"
@@ -55,7 +50,7 @@ typedef enum {
     error_embedding
 } SupportedModelFamily;
 
-inline std::pair<std::string, std::unique_ptr<AutoModel>> get_auto_model(const std::string& model_tag, model_list& available_models, xrt::device* npu_device_inst) {
+inline std::pair<std::string, std::unique_ptr<AutoModel>> get_auto_model(const std::string& model_tag, model_list& available_models, flm_rt::device* npu_device_inst) {
 
     
     static const std::map<std::string, SupportedModelFamily> modelFamilyMap = {
@@ -135,11 +130,9 @@ inline std::pair<std::string, std::unique_ptr<AutoModel>> get_auto_model(const s
         case SupportedModelFamily::qwen3_5:
             auto_chat_engine = std::make_unique<Qwen3_5VL>(npu_device_inst);
             break;
-#ifdef _WIN32
         case SupportedModelFamily::qwen3_5_omni:
             auto_chat_engine = std::make_unique<Qwen3_5_Omni>(npu_device_inst);
             break;
-#endif
         case SupportedModelFamily::qwen3_6_moe:
             auto_chat_engine = std::make_unique<Qwen3_6_MOE>(npu_device_inst);
             break;

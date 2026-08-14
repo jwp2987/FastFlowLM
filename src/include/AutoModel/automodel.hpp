@@ -156,7 +156,7 @@ protected:
 	bool is_model_loaded = false;
 	std::string current_model = "";
 	std::vector<int> token_history;
-	xrt::device* npu_device_inst = nullptr;
+	flm_rt::device* npu_device_inst = nullptr;
 	std::unique_ptr<npu_xclbin_manager> npu = nullptr;
 	bool enable_preemption = false;
     std::vector<int> checkpoint_his;
@@ -225,7 +225,7 @@ public:
 	//************ Shared by all models *************/
 	virtual ~AutoModel() = default;
 
-	AutoModel(xrt::device* npu_device_inst, std::string current_model = "");
+	AutoModel(flm_rt::device* npu_device_inst, std::string current_model = "");
 
 	void reset_parser() {
 		buffer_.clear();
